@@ -1,0 +1,21 @@
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+sqlmodel>=0.0.19
+pydantic-settings>=2.3.0
+python-dotenv>=1.0.1
+
+# Planned orchestration and LLM dependencies
+mistralai>=1.0.0
+langgraph>=0.2.0
+
+# Artifact generation
+python-pptx>=0.6.23
+openpyxl>=3.1.5
+python-docx>=1.1.2
+
+# Analysis and charts
+pandas>=2.2.0
+matplotlib>=3.9.0
+
+# Planned primary sandbox integration
+e2b-code-interpreter>=1.0.0

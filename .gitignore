@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Environment
+.env
+
+# Local data and generated artifacts
+docnexus.db
+*.sqlite
+*.sqlite3
+artifacts/*
+!artifacts/.gitkeep
+
+# Frontend
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+frontend/vite.config.d.ts
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
