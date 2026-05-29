@@ -322,6 +322,7 @@ function traceMetadataItems(metadata: Record<string, unknown>): Array<readonly [
   const items: Array<readonly [string, string]> = [];
 
   appendValue(items, "Tools", metadata.selectedTools);
+  appendValue(items, "Parallel", metadata.parallelTools);
   appendValue(items, "Artifacts", metadata.artifactRequests);
   appendFilterItems(items, metadata.inferredFilters, "");
   appendFilterItems(items, metadata.arguments, "");

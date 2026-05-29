@@ -148,7 +148,7 @@ LangGraph gives us an explicit state machine for these requirements. The current
 START
   -> initialize
   -> plan
-  -> route_tool
+  -> route_tool | parallel_agents
   -> data_agent | excel_agent | ppt_agent | report_agent | sandbox_agent
   -> plan
   -> judge
@@ -159,7 +159,7 @@ START
 END
 ```
 
-The `plan` node calls Mistral with native tools. LangGraph then routes each selected tool call through its own graph node. Data retrieval is executed before downstream artifact/analysis work. For analysis queries, the graph can deterministically add the sandbox node after data retrieval so the workflow does not ask the model whether a chart is needed after the user already requested analysis. The graph then runs the judge. If the judge returns `needs_revision`, `prepare_revision` converts that feedback into a targeted tool call and routes back to only the failed agent once.
+The `plan` node calls Mistral with native tools. LangGraph then routes each selected tool call through its own graph node. Data retrieval is executed before downstream artifact/analysis work. When Mistral selects both PPT and Excel from the same filtered cohort, the graph routes them through `parallel_agents`, giving each branch its own database session while sharing the canonical physician context. For analysis queries, the graph can deterministically add the sandbox node after data retrieval so the workflow does not ask the model whether a chart is needed after the user already requested analysis. The graph then runs the judge. If the judge returns `needs_revision`, `prepare_revision` converts that feedback into a targeted tool call and routes back to only the failed agent once.
 
 This is the main reason LangGraph makes more sense than a simple LangChain-only chain: the system can include an LLM-as-judge step after agent execution. For example, the judge can inspect whether the PPT and Excel outputs are grounded in the same filtered physician set, whether the report references the user's preferences, and whether sandbox code produced a valid chart. If an output fails, the graph can route back to the relevant agent once with targeted feedback.
 
@@ -562,6 +562,7 @@ Current query behavior:
 - Executes `get_physician_data` through the same backend physician service used by `GET /physicians`.
 - Executes `call_ppt_agent` when selected and generates a downloadable `.pptx` through the shared E2B/local artifact worker.
 - Executes `call_excel_agent` when selected and generates a downloadable `.xlsx` through the shared E2B/local artifact worker.
+- Executes PPT and Excel branches in parallel when both are selected after data retrieval.
 - Executes `call_report_agent` when selected, using the Report Agent prompt to generate markdown.
 - Executes `call_sandbox_agent` when selected, using the Sandbox Agent prompt to generate Python code and E2B or the restricted local subprocess fallback to execute it.
 - Records trace events for orchestration, data retrieval, artifact generation, sandbox execution, judge decisions, and targeted retries.
@@ -591,7 +592,7 @@ Current query behavior:
 - Current `/query` implementation can generate PPTX, Excel, markdown reports, sandbox stdout, and chart artifacts. Optional DOCX reports are still pending.
 - Browser visual QA was attempted, but the in-app Browser plugin failed to attach in this Windows sandbox. The frontend production build passes.
 - LangGraph targeted revision is limited to one retry and reruns one target agent at a time; a larger production workflow could support multi-agent revision plans.
-- Independent artifact agents are selected together by Mistral and routed through explicit graph nodes; a production version could execute those branches concurrently with isolated DB sessions and a background job queue.
+- Parallel execution currently focuses on the required PPT+Excel branch; a production version could extend concurrency to more agent types with a background job queue.
 - The first implementation will optimize for the required assignment flow before adding memory or user accounts.
 
 ## What I Would Build Next

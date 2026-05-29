@@ -264,7 +264,7 @@ The current LangGraph flow is:
 START
   -> initialize
   -> plan
-  -> route_tool
+  -> route_tool | parallel_agents
   -> data_agent | excel_agent | ppt_agent | report_agent | sandbox_agent
   -> plan
   -> judge
@@ -275,7 +275,7 @@ START
 END
 ```
 
-The `plan` node calls Mistral with native tools. If tool calls are returned, `route_tool` sends each call to its own agent node. Data retrieval is ordered before artifact agents so the same filtered physician context can be reused across PPT, Excel, report, and sandbox outputs. Downstream agents receive this canonical context from graph state; Mistral is not trusted to serialize full physician rows in tool arguments. For analysis-style queries, the graph can add the sandbox node immediately after data retrieval when Mistral stops early.
+The `plan` node calls Mistral with native tools. If tool calls are returned, `route_tool` sends single calls to their own agent node and `parallel_agents` fans out compatible independent calls such as PPT + Excel. Data retrieval is ordered before artifact agents so the same filtered physician context can be reused across PPT, Excel, report, and sandbox outputs. Parallel artifact branches each get their own database session and isolated `OrchestratorService`, then merge artifact references back into the main graph state. Downstream agents receive this canonical context from graph state; Mistral is not trusted to serialize full physician rows in tool arguments. For analysis-style queries, the graph can add the sandbox node immediately after data retrieval when Mistral stops early.
 
 ## Judge Loop
 

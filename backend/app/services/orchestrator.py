@@ -83,6 +83,25 @@ class OrchestratorService:
     def set_judge_decision(self, decision: JudgeDecision) -> None:
         self._judge_decision = decision
 
+    def set_physician_context(self, physician_context: list[dict[str, object]]) -> None:
+        self._physician_context = [dict(physician) for physician in physician_context]
+
+    def merge_agent_outputs(
+        self,
+        *,
+        artifact_refs: list[ArtifactRef],
+        report_markdown: str | None = None,
+        sandbox_output=None,
+    ) -> None:
+        existing_artifact_ids = {artifact.id for artifact in self._artifact_refs}
+        self._artifact_refs.extend(
+            artifact for artifact in artifact_refs if artifact.id not in existing_artifact_ids
+        )
+        if report_markdown:
+            self._report_markdown = report_markdown
+        if sandbox_output:
+            self._sandbox_output = sandbox_output
+
     def prepare_for_revision(self, tool_name: str) -> None:
         source_agent = SOURCE_AGENT_BY_TOOL_NAME.get(tool_name)
         if source_agent:

@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 from typing import Any, TypedDict
 from uuid import uuid4
@@ -9,6 +10,7 @@ from sqlmodel import Session
 from backend.app.agents.tool_definitions import get_orchestrator_tools
 from backend.app.clients.mistral import MistralToolCall
 from backend.app.core.config import Settings
+from backend.app.db.session import engine
 from backend.app.schemas.artifact import ArtifactRef, ArtifactValidationResult
 from backend.app.schemas.query import JudgeDecision, JudgeStatus, QueryRequest, QueryResponse, SandboxOutput
 from backend.app.schemas.trace import AgentName
@@ -46,6 +48,8 @@ TOOL_EXECUTION_ORDER = {
     "call_sandbox_agent": 4,
 }
 
+PARALLEL_TOOL_NAMES = {"call_excel_agent", "call_ppt_agent"}
+
 GRAPH_NODES = [
     "initialize",
     "plan",
@@ -55,6 +59,7 @@ GRAPH_NODES = [
     "ppt_agent",
     "report_agent",
     "sandbox_agent",
+    "parallel_agents",
     "unsupported_tool",
     "stop_planning",
     "judge",
@@ -232,6 +237,9 @@ def run_query_workflow(
     def sandbox_agent_node(state: QueryWorkflowState) -> dict[str, object]:
         return _execute_current_tool(state)
 
+    def parallel_agents_node(state: QueryWorkflowState) -> dict[str, object]:
+        return _execute_parallel_tools(state)
+
     def unsupported_tool_node(state: QueryWorkflowState) -> dict[str, object]:
         return _execute_current_tool(state)
 
@@ -403,6 +411,8 @@ def run_query_workflow(
 
     def after_plan(state: QueryWorkflowState) -> str:
         if state.get("pending_tool_calls"):
+            if _can_execute_pending_in_parallel(state):
+                return "parallel_agents"
             return "route_tool"
         return "judge"
 
@@ -416,6 +426,8 @@ def run_query_workflow(
         if state.get("active_revision"):
             return "judge"
         if state.get("pending_tool_calls"):
+            if _can_execute_pending_in_parallel(state):
+                return "parallel_agents"
             return "route_tool"
         if _analysis_result_is_ready(state):
             return "judge"
@@ -446,6 +458,7 @@ def run_query_workflow(
     graph.add_node("ppt_agent", ppt_agent_node)
     graph.add_node("report_agent", report_agent_node)
     graph.add_node("sandbox_agent", sandbox_agent_node)
+    graph.add_node("parallel_agents", parallel_agents_node)
     graph.add_node("unsupported_tool", unsupported_tool_node)
     graph.add_node("stop_planning", stop_planning_node)
     graph.add_node("judge", judge_node)
@@ -461,6 +474,7 @@ def run_query_workflow(
     graph.add_conditional_edges("ppt_agent", after_tool)
     graph.add_conditional_edges("report_agent", after_tool)
     graph.add_conditional_edges("sandbox_agent", after_tool)
+    graph.add_conditional_edges("parallel_agents", after_tool)
     graph.add_conditional_edges("unsupported_tool", after_tool)
     graph.add_edge("stop_planning", "judge")
     graph.add_conditional_edges("judge", after_judge)
@@ -564,6 +578,123 @@ def _execute_current_tool(state: QueryWorkflowState) -> dict[str, object]:
         "tool_call_records": tool_call_records,
         "current_tool_call": None,
     }
+
+
+def _can_execute_pending_in_parallel(state: QueryWorkflowState) -> bool:
+    if state.get("active_revision"):
+        return False
+    parallel_calls, _ = _split_parallel_tool_calls(state.get("pending_tool_calls") or [])
+    return len(parallel_calls) > 1 and bool(state["runtime"].physician_context)
+
+
+def _split_parallel_tool_calls(
+    pending_tool_calls: list[MistralToolCall],
+) -> tuple[list[MistralToolCall], list[MistralToolCall]]:
+    parallel_calls: list[MistralToolCall] = []
+    remaining_calls = list(pending_tool_calls)
+    while remaining_calls and remaining_calls[0].name in PARALLEL_TOOL_NAMES:
+        parallel_calls.append(remaining_calls.pop(0))
+    return parallel_calls, remaining_calls
+
+
+def _execute_parallel_tools(state: QueryWorkflowState) -> dict[str, object]:
+    parallel_calls, remaining_calls = _split_parallel_tool_calls(
+        list(state.get("pending_tool_calls") or [])
+    )
+    if len(parallel_calls) < 2:
+        return {"pending_tool_calls": [*parallel_calls, *remaining_calls]}
+
+    start_id = state["trace"].started(
+        agent=AgentName.orchestrator,
+        message="Executing independent agents in parallel.",
+        metadata={"parallelTools": [tool_call.name for tool_call in parallel_calls]},
+    )
+    results_by_id: dict[str, dict[str, object]] = {}
+    with ThreadPoolExecutor(max_workers=len(parallel_calls)) as executor:
+        futures = {
+            executor.submit(
+                _run_tool_in_parallel,
+                settings=state["runtime"].settings,
+                request_id=state["request_id"],
+                physician_context=state["runtime"].physician_context,
+                tool_call=tool_call,
+                trace=state["trace"],
+            ): tool_call
+            for tool_call in parallel_calls
+        }
+        for future in as_completed(futures):
+            tool_call = futures[future]
+            try:
+                result = future.result()
+            except Exception as exc:
+                state["trace"].failed(
+                    started_event_id=start_id,
+                    agent=AgentName.orchestrator,
+                    message=f"Parallel agent failed: {tool_call.name}.",
+                    metadata={"error": _safe_error(exc), "toolName": tool_call.name},
+                )
+                raise
+            results_by_id[tool_call.id] = result
+
+    messages = list(state["messages"])
+    tool_call_records = list(state["tool_call_records"])
+    for tool_call in parallel_calls:
+        result = results_by_id[tool_call.id]
+        state["runtime"].merge_agent_outputs(
+            artifact_refs=result["artifact_refs"],  # type: ignore[arg-type]
+            report_markdown=result.get("report_markdown"),  # type: ignore[arg-type]
+            sandbox_output=result.get("sandbox_output"),
+        )
+        tool_call_records.append(
+            {
+                "id": tool_call.id,
+                "name": tool_call.name,
+                "arguments": tool_call.arguments,
+                "isRevision": False,
+                "executionMode": "parallel",
+            }
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": tool_call.name,
+                "content": _json_dumps(result["tool_result"]),
+            }
+        )
+
+    state["trace"].completed(
+        started_event_id=start_id,
+        agent=AgentName.orchestrator,
+        message=f"Completed {len(parallel_calls)} parallel agent calls.",
+        metadata={"parallelTools": [tool_call.name for tool_call in parallel_calls]},
+    )
+    return {
+        "messages": messages,
+        "tool_call_records": tool_call_records,
+        "pending_tool_calls": remaining_calls,
+        "current_tool_call": None,
+    }
+
+
+def _run_tool_in_parallel(
+    *,
+    settings: Settings,
+    request_id: str,
+    physician_context: list[dict[str, object]],
+    tool_call: MistralToolCall,
+    trace: TraceBuilder,
+) -> dict[str, object]:
+    with Session(engine) as session:
+        runtime = OrchestratorService(settings=settings, session=session, request_id=request_id)
+        runtime.set_physician_context(physician_context)
+        tool_result = runtime.execute_tool(tool_call, trace)
+        return {
+            "tool_result": tool_result,
+            "artifact_refs": runtime.artifact_refs,
+            "report_markdown": runtime.report_markdown,
+            "sandbox_output": runtime.sandbox_output,
+        }
 
 
 def _fallback_answer(runtime: OrchestratorService) -> str:
@@ -994,3 +1125,8 @@ def _score_revision_instructions(decision: JudgeDecision) -> str:
         f"{JUDGE_APPROVAL_THRESHOLD}/100. Current scores: {score_text}. "
         f"Reason: {decision.reason}"
     )
+
+
+def _safe_error(exc: Exception) -> str:
+    message = str(exc).replace("\n", " ").strip()
+    return message[:300] or exc.__class__.__name__

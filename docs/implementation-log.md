@@ -598,3 +598,26 @@ Verification:
 - Ran Python compilation for the LangGraph workflow.
 - Ran the required PPT+Excel walkthrough with mocked Mistral calls and confirmed 12 physicians, PPTX+XLSX artifacts, and judge approval.
 - Ran a preference override workflow where Mistral supplied no filters and the request preferences supplied `CA`, `C341`, and `high`; confirmed the final inferred filters and physician count came from the structured preferences.
+
+## 2026-05-30 - Parallel PPT And Excel Branches
+
+What changed:
+
+- Added a `parallel_agents` LangGraph node for compatible independent artifact branches.
+- PPT and Excel now execute concurrently when Mistral selects both after data retrieval.
+- Each parallel branch gets its own SQLModel session and isolated `OrchestratorService`.
+- The branches share the canonical filtered physician context and merge generated artifact references back into the main workflow state.
+- Made `TraceBuilder` append events under a lock so concurrent trace events are safe to stream.
+- Added trace metadata for `parallelTools` so the UI can show which tools ran together.
+
+Why this came next:
+
+- The assignment's expected walkthrough explicitly says PPT and Excel should run in parallel.
+- The previous implementation allowed Mistral to select both tools in the same planning step, but the graph drained them serially.
+- Running branches with separate database sessions keeps the implementation honest without sharing a mutable SQLAlchemy session across threads.
+
+Verification:
+
+- Ran Python compilation for the workflow, orchestrator, and trace modules.
+- Ran a mocked required walkthrough and confirmed the trace now shows `Executing independent agents in parallel`, then both `excel started` and `ppt started` before either completed.
+- Confirmed the walkthrough still returns 12 physicians, PPTX + XLSX artifacts, and judge approval.
