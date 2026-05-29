@@ -82,11 +82,12 @@ Tradeoff:
 
 ## ADR 006 - Use E2B As The Primary Sandbox With A Local Exec Fallback
 
-Decision: Use E2B for sandboxed code execution when an API key is available. Include a restricted Python `exec()` subprocess fallback for local development and demos.
+Decision: Use E2B for sandboxed code execution when an API key is available. Include restricted local subprocess fallbacks for local development and demos.
 
 Why:
 
 - The Sandbox Agent must actually execute generated Python code.
+- PPT and Excel renderers also benefit from an isolated execution boundary because they transform LLM-planned content into downloadable files.
 - E2B provides isolated cloud sandboxes and avoids unsafe in-process execution.
 - It supports the assignment's recommendation and has a free Hobby tier.
 - A local fallback makes the project easier to demo when no E2B key is configured.
@@ -94,7 +95,7 @@ Why:
 
 Tradeoff:
 
-- E2B requires an API key and network access. A restricted local `exec()` subprocess can support local demos, but should be clearly labeled as a fallback rather than production-grade arbitrary-code isolation.
+- E2B requires an API key and network access. Restricted local subprocess workers can support local demos, but should be clearly labeled as fallback behavior rather than production-grade arbitrary-code isolation.
 
 Local fallback guardrails:
 

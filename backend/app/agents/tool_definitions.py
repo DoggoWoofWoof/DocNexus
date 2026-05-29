@@ -14,7 +14,7 @@ ORCHESTRATOR_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "get_physician_data",
-            "description": "Retrieve filtered mock physician records by specialty, geography, ICD-10 codes, and volume tier.",
+            "description": "Retrieve filtered mock physician records. Extract specialty, geography, ICD-10 codes, and volume tier from the user's natural-language query.",
             "parameters": {
                 "type": "object",
                 "properties": {

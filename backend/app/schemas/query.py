@@ -60,6 +60,7 @@ class SandboxOutput(CamelModel):
     stderr: str = ""
     chart_artifact_id: str | None = None
     execution_status: Literal["completed", "failed"] = "completed"
+    execution_provider: str = "local_subprocess"
 
 
 class QueryResponse(CamelModel):

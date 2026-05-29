@@ -473,3 +473,50 @@ Verification:
 - Confirmed both returned artifacts included `provenance.llmPlan`.
 - Confirmed deterministic validators passed for both generated files.
 - Confirmed the judge received the planned artifacts and returned a scored approval.
+
+## 2026-05-29 - E2B Sandbox Execution And Markdown Table Rendering
+
+What changed:
+
+- Wired `SANDBOX_PROVIDER=e2b` plus `E2B_API_KEY` into the Sandbox Agent execution path.
+- Kept the restricted local subprocess runner as an automatic fallback when E2B is unavailable.
+- Added `executionProvider` to sandbox outputs and trace metadata.
+- Added GitHub-Flavored Markdown rendering in the React UI with `remark-gfm`.
+- Normalized compressed markdown table row breaks before rendering.
+- Tightened the orchestrator and sandbox prompts so tables use real row-level newlines.
+- Allowed both `localhost:5173` and `127.0.0.1:5173` as local frontend origins.
+
+Why this came next:
+
+- The demo should clearly prove whether code ran in E2B or the local fallback.
+- The previous UI could show model-generated markdown tables as one unreadable line.
+- Local browser testing often uses `127.0.0.1`, while the original CORS config only allowed `localhost`.
+
+Verification:
+
+- Ran backend compilation across `backend/app`.
+- Ran the frontend production build.
+- Ran a direct sandbox smoke test that executed in E2B and returned `executionProvider=e2b`.
+
+## 2026-05-29 - Query-Only UI And Rich Trace Details
+
+What changed:
+
+- Removed manual ICD/state/specialty/volume inputs from the React UI.
+- Sent empty optional override fields from the frontend so Mistral performs natural-language extraction through tool calling.
+- Added response metadata for `inferredFilters`, `physicianCount`, and `physicianPreview`.
+- Added an orchestrator trace event showing selected tools, artifact intent, and inferred filters.
+- Rendered trace metadata as readable chips in the UI instead of hiding it inside JSON.
+- Added renderer/provider details to PPT and Excel trace metadata.
+
+Why this came next:
+
+- The demo should feel like natural-language-to-data orchestration, not a manual form wrapped around an LLM.
+- Interviewers can now see exactly what the model parsed from the query and which tools the graph selected.
+- Rich trace chips make the LangGraph state transitions easier to explain live.
+
+Verification:
+
+- Ran backend compilation across `backend/app`.
+- Ran the frontend production build.
+- Ran a streamed Mistral smoke test with empty preferences and confirmed the trace included `Medical Oncology`, `CA/NY`, `C341/C342`, and `high`.

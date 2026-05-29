@@ -149,6 +149,12 @@ def run_query_workflow(
             }
 
         tool_calls = _order_tool_calls(model_message.tool_calls)
+        state["trace"].completed(
+            started_event_id=None,
+            agent=AgentName.orchestrator,
+            message=f"Mistral selected {len(tool_calls)} tool call(s).",
+            metadata=_tool_selection_metadata(tool_calls, step_count),
+        )
         return {
             "step_count": step_count,
             "pending_tool_calls": tool_calls,
@@ -346,6 +352,9 @@ def run_query_workflow(
                 "graphNodes": GRAPH_NODES,
                 "revisionAttempts": state.get("revision_count", 0),
                 "revisionHistory": state.get("revision_history", []),
+                "inferredFilters": _inferred_data_filters(state["tool_call_records"]),
+                "physicianCount": len(state["runtime"].physician_context),
+                "physicianPreview": state["runtime"].physician_context[:12],
             },
         )
         return {"response": response}
@@ -460,6 +469,59 @@ def _execute_current_tool(state: QueryWorkflowState) -> dict[str, object]:
 
 def _order_tool_calls(tool_calls: list[MistralToolCall]) -> list[MistralToolCall]:
     return sorted(tool_calls, key=lambda tool_call: TOOL_EXECUTION_ORDER.get(tool_call.name, 99))
+
+
+def _tool_selection_metadata(tool_calls: list[MistralToolCall], step_count: int) -> dict[str, object]:
+    return {
+        "planningStep": step_count,
+        "selectedTools": [tool_call.name for tool_call in tool_calls],
+        "artifactRequests": _artifact_requests(tool_calls),
+        "inferredFilters": _inferred_filters_from_tool_calls(tool_calls),
+    }
+
+
+def _artifact_requests(tool_calls: list[MistralToolCall]) -> list[str]:
+    artifacts: list[str] = []
+    for tool_call in tool_calls:
+        if tool_call.name == "call_ppt_agent":
+            artifacts.append("pptx")
+        elif tool_call.name == "call_excel_agent":
+            artifacts.append("xlsx")
+        elif tool_call.name == "call_report_agent":
+            artifacts.append("markdown")
+        elif tool_call.name == "call_sandbox_agent":
+            artifacts.append("analysis")
+    return artifacts
+
+
+def _inferred_filters_from_tool_calls(tool_calls: list[MistralToolCall]) -> dict[str, object]:
+    for tool_call in tool_calls:
+        if tool_call.name != "get_physician_data":
+            continue
+        return _normalize_filter_arguments(tool_call.arguments)
+    return {}
+
+
+def _inferred_data_filters(tool_call_records: list[dict[str, object]]) -> dict[str, object]:
+    for record in tool_call_records:
+        if record.get("name") != "get_physician_data":
+            continue
+        arguments = record.get("arguments")
+        if not isinstance(arguments, dict):
+            return {}
+        return _normalize_filter_arguments(arguments)
+    return {}
+
+
+def _normalize_filter_arguments(arguments: dict[str, object]) -> dict[str, object]:
+    return {
+        "specialty": arguments.get("specialty") or [],
+        "states": arguments.get("state") or [],
+        "regions": arguments.get("region") or [],
+        "icd10Codes": arguments.get("icd10_codes") or [],
+        "volumeThreshold": arguments.get("volume_threshold"),
+        "boardCertified": arguments.get("board_certified"),
+    }
 
 
 def _tool_name_for_judge_target(target_agent: str | None) -> str | None:

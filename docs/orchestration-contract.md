@@ -235,7 +235,7 @@ Current execution support:
 - `call_ppt_agent`: implemented
 - `call_excel_agent`: implemented
 - `call_report_agent`: implemented for markdown reports
-- `call_sandbox_agent`: implemented with restricted local subprocess execution
+- `call_sandbox_agent`: implemented with E2B execution when configured, plus restricted local subprocess fallback
 
 ## Prompt Files
 

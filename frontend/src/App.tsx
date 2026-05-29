@@ -1,5 +1,6 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   BarChart3,
   BrainCircuit,
@@ -13,8 +14,8 @@ import {
   Search,
 } from "lucide-react";
 
-import { API_BASE_URL, artifactUrl, fetchPhysicians, runQueryStream } from "./api";
-import type { ArtifactRef, ArtifactType, Physician, QueryPreferences, QueryResponse, TraceEvent } from "./types";
+import { API_BASE_URL, artifactUrl, runQueryStream } from "./api";
+import type { ArtifactRef, ArtifactType, Physician, QueryResponse, TraceEvent } from "./types";
 
 const SAMPLE_QUERIES = [
   "Give me a slide deck and an Excel breakdown of high-volume NSCLC oncologists in California and New York.",
@@ -27,69 +28,31 @@ const DEFAULT_QUERY = SAMPLE_QUERIES[0];
 
 function App() {
   const [query, setQuery] = useState(DEFAULT_QUERY);
-  const [icd10Codes, setIcd10Codes] = useState("C341, C342");
-  const [states, setStates] = useState("CA, NY");
-  const [regions, setRegions] = useState("");
-  const [specialties, setSpecialties] = useState("Medical Oncology");
-  const [volumeThreshold, setVolumeThreshold] = useState<"low" | "high" | "very_high">("high");
-  const [boardCertified, setBoardCertified] = useState(true);
   const [response, setResponse] = useState<QueryResponse | null>(null);
   const [liveTrace, setLiveTrace] = useState<TraceEvent[]>([]);
   const [physicians, setPhysicians] = useState<Physician[]>([]);
   const [isRunning, setIsRunning] = useState(false);
-  const [isLoadingPhysicians, setIsLoadingPhysicians] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const preferences = useMemo<QueryPreferences>(
-    () => ({
-      icd10Codes: splitList(icd10Codes),
-      states: splitList(states).map((state) => state.toUpperCase()),
-      regions: splitList(regions),
-      specialties: splitList(specialties),
-      volumeThreshold,
-      boardCertified,
-    }),
-    [boardCertified, icd10Codes, regions, specialties, states, volumeThreshold],
-  );
-
-  const requestedArtifacts = useMemo<ArtifactType[]>(() => inferRequestedArtifacts(query), [query]);
-
-  async function handlePreviewPhysicians() {
-    setIsLoadingPhysicians(true);
-    setError(null);
-    try {
-      const params = new URLSearchParams();
-      preferences.states.forEach((state) => params.append("state", state));
-      preferences.regions.forEach((region) => params.append("region", region));
-      preferences.specialties.forEach((specialty) => params.append("specialty", specialty));
-      preferences.icd10Codes.forEach((code) => params.append("icd10_codes", code));
-      if (preferences.volumeThreshold) {
-        params.set("volume_threshold", preferences.volumeThreshold);
-      }
-      if (preferences.boardCertified !== null && preferences.boardCertified !== undefined) {
-        params.set("board_certified", String(preferences.boardCertified));
-      }
-
-      const result = await fetchPhysicians(params);
-      setPhysicians(result.physicians);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load physicians.");
-    } finally {
-      setIsLoadingPhysicians(false);
-    }
-  }
 
   async function handleRunQuery() {
     setIsRunning(true);
     setError(null);
     setResponse(null);
     setLiveTrace([]);
+    setPhysicians([]);
     try {
       const result = await runQueryStream(
         {
           query,
-          preferences,
-          requestedArtifacts,
+          preferences: {
+            icd10Codes: [],
+            states: [],
+            regions: [],
+            specialties: [],
+            volumeThreshold: null,
+            boardCertified: null,
+          },
+          requestedArtifacts: [],
           includeTrace: true,
         },
         {
@@ -104,9 +67,7 @@ function App() {
         },
       );
       setResponse(result);
-      if (result.metadata.toolCalls) {
-        void handlePreviewPhysicians();
-      }
+      setPhysicians(metadataPhysicians(result.metadata));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Query failed.");
     } finally {
@@ -145,37 +106,7 @@ function App() {
             ))}
           </div>
 
-          <div className="preference-grid">
-            <Field label="ICD-10 Codes">
-              <input value={icd10Codes} onChange={(event) => setIcd10Codes(event.target.value)} />
-            </Field>
-            <Field label="States">
-              <input value={states} onChange={(event) => setStates(event.target.value)} />
-            </Field>
-            <Field label="Regions">
-              <input value={regions} onChange={(event) => setRegions(event.target.value)} placeholder="northeast" />
-            </Field>
-            <Field label="Specialties">
-              <input value={specialties} onChange={(event) => setSpecialties(event.target.value)} />
-            </Field>
-            <Field label="Volume">
-              <select value={volumeThreshold} onChange={(event) => setVolumeThreshold(event.target.value as typeof volumeThreshold)}>
-                <option value="low">Low+</option>
-                <option value="high">High+</option>
-                <option value="very_high">Very high</option>
-              </select>
-            </Field>
-            <label className="check-row">
-              <input checked={boardCertified} type="checkbox" onChange={(event) => setBoardCertified(event.target.checked)} />
-              Board certified
-            </label>
-          </div>
-
           <div className="action-row">
-            <button className="secondary" type="button" onClick={handlePreviewPhysicians} disabled={isLoadingPhysicians}>
-              {isLoadingPhysicians ? <Loader2 className="spin" size={17} /> : <Search size={17} />}
-              Preview Physicians
-            </button>
             <button className="primary" type="button" onClick={handleRunQuery} disabled={isRunning || query.trim().length < 3}>
               {isRunning ? <Loader2 className="spin" size={17} /> : <Play size={17} />}
               Run Agent Workflow
@@ -202,24 +133,28 @@ function App() {
           </div>
           {response?.answerMarkdown ? (
             <div className="markdown-body">
-              <ReactMarkdown>{response.answerMarkdown}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeMarkdown(response.answerMarkdown)}</ReactMarkdown>
             </div>
           ) : (
             <EmptyState text="Run a query to render report text, generated analysis, and artifact links." />
           )}
 
           {response?.judgeDecision ? <JudgeScorecard response={response} /> : null}
+          {response ? <InferredScope metadata={response.metadata} /> : null}
 
           {response?.sandboxOutput ? (
             <div className="sandbox-box">
               <div className="sandbox-header">
                 <FlaskConical size={17} />
                 <strong>Sandbox Output</strong>
-                <span>{response.sandboxOutput.executionStatus}</span>
+                <span>{response.sandboxOutput.executionStatus} · {response.sandboxOutput.executionProvider}</span>
               </div>
-              <pre>{response.sandboxOutput.code}</pre>
-              {response.sandboxOutput.stdout ? <code className="stdout">{response.sandboxOutput.stdout}</code> : null}
-              {response.sandboxOutput.stderr ? <code className="stderr">{response.sandboxOutput.stderr}</code> : null}
+              <details className="code-panel" open>
+                <summary>Generated analysis code</summary>
+                <pre>{response.sandboxOutput.code}</pre>
+              </details>
+              {response.sandboxOutput.stdout ? <pre className="stdout">{normalizeMarkdown(response.sandboxOutput.stdout)}</pre> : null}
+              {response.sandboxOutput.stderr ? <pre className="stderr">{response.sandboxOutput.stderr}</pre> : null}
               {chartArtifact ? <img alt="Sandbox chart" src={artifactUrl(chartArtifact.downloadUrl)} /> : null}
             </div>
           ) : null}
@@ -235,7 +170,10 @@ function App() {
               {response.artifacts.map((artifact) => (
                 <a key={artifact.id} href={artifactUrl(artifact.downloadUrl)}>
                   {artifactIcon(artifact.type)}
-                  <span>{artifact.filename}</span>
+                  <span>
+                    {artifact.filename}
+                    <small>{artifact.sourceAgent} · {artifactProvider(artifact)}</small>
+                  </span>
                   <Download size={16} />
                 </a>
               ))}
@@ -258,15 +196,6 @@ function App() {
   );
 }
 
-function Field({ children, label }: { children: React.ReactNode; label: string }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {children}
-    </label>
-  );
-}
-
 function TraceList({ trace, isRunning }: { trace: TraceEvent[]; isRunning: boolean }) {
   if (!trace.length) {
     return <EmptyState text={isRunning ? "Agent workflow is starting." : "Trace events will appear here."} />;
@@ -279,9 +208,130 @@ function TraceList({ trace, isRunning }: { trace: TraceEvent[]; isRunning: boole
           <span className="agent">{event.agent}</span>
           <p>{event.message}</p>
           {event.elapsedMs !== null && event.elapsedMs !== undefined ? <small>{event.elapsedMs} ms</small> : null}
+          <TraceMetadata metadata={event.metadata} />
         </li>
       ))}
     </ol>
+  );
+}
+
+function TraceMetadata({ metadata }: { metadata: Record<string, unknown> }) {
+  const items = traceMetadataItems(metadata);
+  if (!items.length) {
+    return null;
+  }
+
+  return (
+    <div className="trace-meta">
+      {items.map(([label, value]) => (
+        <span key={`${label}:${value}`}>
+          {label}: {value}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function traceMetadataItems(metadata: Record<string, unknown>): Array<readonly [string, string]> {
+  const items: Array<readonly [string, string]> = [];
+
+  appendValue(items, "Tools", metadata.selectedTools);
+  appendValue(items, "Artifacts", metadata.artifactRequests);
+  appendFilterItems(items, metadata.inferredFilters, "");
+  appendFilterItems(items, metadata.arguments, "");
+  appendFilterItems(items, metadata.filters, "Applied ");
+  appendValue(items, "Records", metadata.count);
+  appendValue(items, "Physicians", metadata.physicianCount);
+  appendRenderItems(items, metadata.renderExecution);
+  appendScoreItems(items, metadata.scores);
+  appendValue(items, "Target", metadata.targetAgent);
+
+  return dedupeItems(items);
+}
+
+function appendFilterItems(
+  items: Array<readonly [string, string]>,
+  value: unknown,
+  prefix: string,
+) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return;
+  }
+
+  const filters = value as Record<string, unknown>;
+  appendValue(items, `${prefix}Specialty`, filters.specialty);
+  appendValue(items, `${prefix}States`, filters.states ?? filters.state);
+  appendValue(items, `${prefix}Regions`, filters.regions ?? filters.region);
+  appendValue(items, `${prefix}ICD-10`, filters.icd10Codes ?? filters.icd10_codes);
+  appendValue(items, `${prefix}Volume`, filters.volumeThreshold ?? filters.volume_threshold);
+  appendValue(items, `${prefix}Board`, filters.boardCertified ?? filters.board_certified);
+}
+
+function appendRenderItems(items: Array<readonly [string, string]>, value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return;
+  }
+
+  const render = value as Record<string, unknown>;
+  appendValue(items, "Renderer", render.executionProvider);
+  appendValue(items, "Fallback", render.fallbackReason);
+}
+
+function appendScoreItems(items: Array<readonly [string, string]>, value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return;
+  }
+
+  const scores = value as Record<string, unknown>;
+  appendValue(items, "Overall", scores.overall);
+  appendValue(items, "Grounding", scores.grounding);
+  appendValue(items, "Completion", scores.completion);
+}
+
+function appendValue(items: Array<readonly [string, string]>, label: string, value: unknown) {
+  const formatted = formatMetadataValue(value);
+  if (formatted) {
+    items.push([label, formatted]);
+  }
+}
+
+function dedupeItems(items: Array<readonly [string, string]>): Array<readonly [string, string]> {
+  const seen = new Set<string>();
+  return items.filter(([label, value]) => {
+    const key = `${label}:${value}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function InferredScope({ metadata }: { metadata: Record<string, unknown> }) {
+  const filters = metadata.inferredFilters;
+  if (!filters || typeof filters !== "object") {
+    return null;
+  }
+
+  const entries = Object.entries(filters)
+    .map(([key, value]) => [labelFor(key), formatMetadataValue(value)] as const)
+    .filter(([, value]) => value);
+
+  if (!entries.length) {
+    return null;
+  }
+
+  return (
+    <div className="scope-card">
+      <strong>Inferred Scope</strong>
+      <div>
+        {entries.map(([label, value]) => (
+          <span key={label}>
+            {label}: {value}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -353,29 +403,8 @@ function EmptyState({ text }: { text: string }) {
   return <div className="empty-state">{text}</div>;
 }
 
-function splitList(value: string): string[] {
-  return value
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-}
-
-function inferRequestedArtifacts(value: string): ArtifactType[] {
-  const lower = value.toLowerCase();
-  const artifacts = new Set<ArtifactType>();
-  if (lower.includes("slide") || lower.includes("deck") || lower.includes("powerpoint") || lower.includes("ppt")) {
-    artifacts.add("pptx");
-  }
-  if (lower.includes("excel") || lower.includes("spreadsheet") || lower.includes("workbook") || lower.includes("breakdown")) {
-    artifacts.add("xlsx");
-  }
-  if (lower.includes("report") || lower.includes("memo") || lower.includes("brief")) {
-    artifacts.add("markdown");
-  }
-  if (lower.includes("analysis") || lower.includes("chart") || lower.includes("plot") || lower.includes("distribution")) {
-    artifacts.add("chart_png");
-  }
-  return Array.from(artifacts);
+function normalizeMarkdown(value: string): string {
+  return value.replace(/\|\s+\|/g, "|\n|");
 }
 
 function artifactIcon(type: ArtifactType) {
@@ -383,6 +412,32 @@ function artifactIcon(type: ArtifactType) {
   if (type === "xlsx") return <FileSpreadsheet size={17} />;
   if (type === "chart_png" || type === "chart_svg") return <BarChart3 size={17} />;
   return <FileText size={17} />;
+}
+
+function metadataPhysicians(metadata: Record<string, unknown>): Physician[] {
+  return Array.isArray(metadata.physicianPreview) ? (metadata.physicianPreview as Physician[]) : [];
+}
+
+function artifactProvider(artifact: ArtifactRef): string {
+  const render = artifact.provenance?.renderExecution;
+  if (render && typeof render === "object" && "executionProvider" in render) {
+    return String((render as { executionProvider: unknown }).executionProvider);
+  }
+  return "agent output";
+}
+
+function labelFor(value: string): string {
+  return value.replace(/([A-Z])/g, " $1").replace(/^./, (letter) => letter.toUpperCase());
+}
+
+function formatMetadataValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.join(", ");
+  }
+  if (value === null || value === undefined || value === "") {
+    return "";
+  }
+  return String(value);
 }
 
 export default App;

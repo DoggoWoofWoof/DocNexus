@@ -49,6 +49,7 @@ export type SandboxOutput = {
   stderr: string;
   chartArtifactId?: string | null;
   executionStatus: "completed" | "failed";
+  executionProvider: string;
 };
 
 export type JudgeDecision = {

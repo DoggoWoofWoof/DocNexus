@@ -98,7 +98,7 @@ def generate_and_run_sandbox_code(
         revision_instructions=revision_instructions,
         previous_error=None,
     )
-    result, chart_path = _run_local_exec_sandbox(settings=settings, code=code, dataset=dataset)
+    result, chart_path = _run_configured_sandbox(settings=settings, code=code, dataset=dataset)
 
     if result.execution_status == "failed":
         corrected_code = _generate_code(
@@ -109,7 +109,11 @@ def generate_and_run_sandbox_code(
             revision_instructions=revision_instructions,
             previous_error=result.stderr,
         )
-        corrected_result, chart_path = _run_local_exec_sandbox(settings=settings, code=corrected_code, dataset=dataset)
+        corrected_result, chart_path = _run_configured_sandbox(
+            settings=settings,
+            code=corrected_code,
+            dataset=dataset,
+        )
         corrected_result.code = corrected_code
         result = corrected_result
     else:
@@ -132,6 +136,26 @@ def generate_and_run_sandbox_code(
         result.chart_artifact_id = artifact.id
 
     return result
+
+
+def _run_configured_sandbox(
+    *,
+    settings: Settings,
+    code: str,
+    dataset: list[dict[str, object]],
+) -> tuple[SandboxOutput, Path | None]:
+    provider = settings.sandbox_provider.lower().strip()
+    if provider == "e2b" and settings.e2b_api_key:
+        try:
+            return _run_e2b_sandbox(settings=settings, code=code, dataset=dataset)
+        except Exception as exc:
+            result, chart_path = _run_local_exec_sandbox(settings=settings, code=code, dataset=dataset)
+            result.execution_provider = "local_subprocess_fallback"
+            fallback_note = f"E2B was unavailable, so local fallback ran instead: {_safe_error(exc)}"
+            result.stderr = "\n".join(part for part in [fallback_note, result.stderr] if part)
+            return result, chart_path
+
+    return _run_local_exec_sandbox(settings=settings, code=code, dataset=dataset)
 
 
 def _generate_code(
@@ -180,7 +204,15 @@ def _run_local_exec_sandbox(
     try:
         _validate_code(code)
     except ValueError as exc:
-        return SandboxOutput(code=code, stderr=str(exc), execution_status="failed"), None
+        return (
+            SandboxOutput(
+                code=code,
+                stderr=str(exc),
+                execution_status="failed",
+                execution_provider="local_subprocess",
+            ),
+            None,
+        )
 
     with tempfile.TemporaryDirectory(prefix="docnexus_sandbox_") as tmp:
         tmp_path = Path(tmp)
@@ -204,6 +236,7 @@ def _run_local_exec_sandbox(
                     stdout=exc.stdout or "",
                     stderr=f"Sandbox timed out after {settings.sandbox_timeout_seconds} seconds.",
                     execution_status="failed",
+                    execution_provider="local_subprocess",
                 ),
                 None,
             )
@@ -213,6 +246,7 @@ def _run_local_exec_sandbox(
             stdout=completed.stdout,
             stderr=completed.stderr,
             execution_status="completed" if completed.returncode == 0 else "failed",
+            execution_provider="local_subprocess",
         )
 
         chart_path = tmp_path / "chart.png"
@@ -222,6 +256,102 @@ def _run_local_exec_sandbox(
             return output, persistent_tmp
 
         return output, None
+
+
+def _run_e2b_sandbox(
+    *,
+    settings: Settings,
+    code: str,
+    dataset: list[dict[str, object]],
+) -> tuple[SandboxOutput, Path | None]:
+    try:
+        _validate_code(code)
+    except ValueError as exc:
+        return (
+            SandboxOutput(
+                code=code,
+                stderr=str(exc),
+                execution_status="failed",
+                execution_provider="e2b",
+            ),
+            None,
+        )
+
+    from e2b_code_interpreter import Sandbox as E2BSandbox
+
+    sandbox = E2BSandbox.create(
+        api_key=settings.e2b_api_key,
+        timeout=max(settings.sandbox_timeout_seconds + 30, 60),
+        allow_internet_access=False,
+    )
+    try:
+        execution = sandbox.run_code(
+            _build_e2b_code(code=code, dataset=dataset),
+            language="python",
+            timeout=settings.sandbox_timeout_seconds,
+            request_timeout=max(settings.sandbox_timeout_seconds + 30, 60),
+        )
+        stdout = "\n".join(execution.logs.stdout)
+        stderr_parts = ["\n".join(execution.logs.stderr)]
+        if execution.error:
+            stderr_parts.append(
+                "\n".join(
+                    part
+                    for part in [
+                        execution.error.name,
+                        execution.error.value,
+                        execution.error.traceback,
+                    ]
+                    if part
+                )
+            )
+        output = SandboxOutput(
+            code=code,
+            stdout=stdout,
+            stderr="\n".join(part for part in stderr_parts if part),
+            execution_status="failed" if execution.error else "completed",
+            execution_provider="e2b",
+        )
+        chart_path = _read_e2b_chart(sandbox=sandbox, settings=settings)
+        return output, chart_path
+    finally:
+        sandbox.kill()
+
+
+def _build_e2b_code(*, code: str, dataset: list[dict[str, object]]) -> str:
+    dataset_json = json.dumps(dataset)
+    return f"""
+import json
+import math
+import statistics
+from collections import Counter, defaultdict
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pandas as pd
+
+dataset = json.loads({dataset_json!r})
+
+{code}
+""".strip()
+
+
+def _read_e2b_chart(*, sandbox, settings: Settings) -> Path | None:
+    for remote_path in ("/home/user/chart.png", "chart.png"):
+        try:
+            chart_bytes = sandbox.files.read(remote_path, format="bytes")
+        except Exception:
+            continue
+
+        if not chart_bytes:
+            continue
+
+        persistent_tmp = settings.resolved_artifact_dir / f"tmp_chart_{uuid4().hex[:12]}.png"
+        persistent_tmp.write_bytes(bytes(chart_bytes))
+        return persistent_tmp
+
+    return None
 
 
 def _validate_code(code: str) -> None:
@@ -249,3 +379,8 @@ def _strip_code_fences(text: str) -> str:
             lines = lines[:-1]
         return "\n".join(lines)
     return text
+
+
+def _safe_error(exc: Exception) -> str:
+    message = str(exc).replace("\n", " ").strip()
+    return message[:300] or exc.__class__.__name__

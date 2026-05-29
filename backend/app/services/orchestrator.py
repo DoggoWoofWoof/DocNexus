@@ -361,6 +361,7 @@ class OrchestratorService:
             metadata={
                 "artifactId": artifact_ref.id,
                 "physicianCount": len(excel_args.physician_list),
+                "renderExecution": artifact_ref.provenance.get("renderExecution", {}),
                 "revision": bool(excel_args.revision_instructions),
             },
         )
@@ -474,14 +475,20 @@ class OrchestratorService:
                 started_event_id=start_id,
                 agent=AgentName.sandbox,
                 message="Sandbox analysis completed.",
-                metadata={"chartArtifactId": output.chart_artifact_id},
+                metadata={
+                    "chartArtifactId": output.chart_artifact_id,
+                    "executionProvider": output.execution_provider,
+                },
             )
         else:
             trace.failed(
                 started_event_id=start_id,
                 agent=AgentName.sandbox,
                 message="Sandbox analysis failed after retry.",
-                metadata={"stderr": output.stderr[-1000:]},
+                metadata={
+                    "stderr": output.stderr[-1000:],
+                    "executionProvider": output.execution_provider,
+                },
             )
 
         return {
@@ -532,6 +539,7 @@ class OrchestratorService:
             metadata={
                 "artifactId": artifact_ref.id,
                 "physicianCount": len(ppt_args.physician_list),
+                "renderExecution": artifact_ref.provenance.get("renderExecution", {}),
                 "revision": bool(ppt_args.revision_instructions),
             },
         )

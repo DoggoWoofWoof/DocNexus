@@ -302,6 +302,23 @@ button:disabled {
   color: #6f8296;
 }
 
+.trace-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.trace-meta span {
+  background: #eef5f9;
+  border: 1px solid #d5e5ef;
+  border-radius: 999px;
+  color: #2d506a;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 4px 7px;
+}
+
 .markdown-body {
   color: #26313f;
   line-height: 1.58;
@@ -393,9 +410,49 @@ button:disabled {
 }
 
 .artifact-list span {
+  display: grid;
+  gap: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.artifact-list small {
+  color: #6f8296;
+  font-size: 11px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.scope-card {
+  background: #f8fbfd;
+  border: 1px solid #d8e2ee;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 12px;
+}
+
+.scope-card strong {
+  color: #17263a;
+  font-size: 13px;
+}
+
+.scope-card div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scope-card span {
+  background: #eaf1f6;
+  border-radius: 999px;
+  color: #2d506a;
+  font-size: 12px;
+  font-weight: 800;
+  padding: 5px 8px;
 }
 
 .sandbox-box {
@@ -419,6 +476,18 @@ button:disabled {
   font-weight: 800;
   margin-left: auto;
   padding: 4px 8px;
+}
+
+.code-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.code-panel summary {
+  color: #2d506a;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 pre,

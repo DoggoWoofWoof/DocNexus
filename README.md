@@ -29,13 +29,13 @@ Current implemented slice:
 - `POST /query` LangGraph workflow with Mistral tool calling, per-agent nodes, context reuse, judge evaluation, and targeted revision
 - `POST /query/stream` NDJSON endpoint for live trace events plus the final response
 - Artifact registry and `GET /artifacts/{id}` downloads
-- LLM-backed PPT Agent that plans slide content, then renders real `.pptx` decks with title, overview, insights, and top-physicians slides
-- LLM-backed Excel Agent that plans workbook purpose/analysis notes, then renders real `.xlsx` workbooks with raw data, state x specialty summary, and ICD-10 breakdown sheets
+- LLM-backed PPT Agent that plans slide content, then renders real `.pptx` decks through the shared E2B/local sandbox execution layer
+- LLM-backed Excel Agent that plans workbook purpose/analysis notes, then renders real `.xlsx` workbooks through the shared E2B/local sandbox execution layer
 - LLM-backed Report Agent that returns markdown in the UI response and stores a downloadable `.md` artifact
-- LLM-backed Sandbox Agent with restricted local Python `exec()` subprocess execution, stdout capture, retry, and chart artifact registration
+- LLM-backed Sandbox Agent with E2B execution when configured, restricted local Python subprocess fallback, stdout capture, retry, and chart artifact registration
 - LLM Judge Agent that returns an approve/revise/fail decision and appears in the trace
 - Per-agent LangGraph nodes with a targeted revision edge from `needs_revision` back to the relevant agent once
-- React/Vite frontend with query composer, preference panel, streaming trace timeline, result rendering, artifact downloads, sandbox output, and physician preview
+- React/Vite frontend with query-only composer, inferred scope display, streaming trace timeline, result rendering, artifact downloads, sandbox output, and physician preview
 - Source-controlled prompt files for every planned agent
 
 ## Assignment Goal
@@ -52,7 +52,7 @@ The system should understand the requested artifact, retrieve relevant mock phys
 ## Architecture
 
 ```text
-User query + preferences
+User query
         |
         v
 React UI
@@ -71,7 +71,7 @@ LangGraph workflow state
         |       +--> Report Agent --------+--> Artifact store --> GET /artifacts/{id}
         |       +--> Sandbox Agent -------+
         |                                  |
-        |                                  +--> Restricted local Python subprocess
+        |                                  +--> Shared E2B/local execution layer
         |
         +--> Deterministic artifact validation
         |
@@ -104,7 +104,7 @@ The key design choice is separating model judgment from workflow execution:
 | Excel Generation | openpyxl | Server-side generation of real XLSX workbooks with formatting and multiple sheets. |
 | Report Output | Markdown first, optional python-docx | Markdown renders well in the UI; DOCX can be added as a downloadable professional report artifact. |
 | Analysis | pandas + matplotlib | Reliable tabular analysis and chart output for the Sandbox Agent. |
-| Sandbox | E2B primary, restricted Python `exec()` subprocess fallback | E2B provides isolated cloud execution; the local fallback keeps demos usable when no E2B key is configured. |
+| Sandbox / Isolated Execution | E2B primary, restricted local subprocess fallback | E2B provides isolated cloud execution for analysis and artifact rendering; local fallback keeps demos usable if E2B is unavailable. |
 
 References:
 
@@ -205,7 +205,7 @@ PPT Agent:
 - Input: topic, physician list, ICD-10 scope, slide count, style notes
 - Output: downloadable `.pptx`
 - LLM role: generate the deck title, subtitle, insight bullets, and table rationale as structured JSON
-- Renderer role: use `python-pptx` to create the actual PowerPoint file deterministically
+- Renderer role: use `python-pptx` inside the shared E2B/local artifact worker to create the actual PowerPoint file deterministically
 - Minimum slides: title, population overview, key insights, top 10 physicians table
 
 Excel Agent:
@@ -213,7 +213,7 @@ Excel Agent:
 - Input: analysis type, physician list, dimensions, ICD-10 scope
 - Output: downloadable `.xlsx`
 - LLM role: generate workbook title, summary, sheet plan, and analysis notes as structured JSON
-- Renderer role: use `openpyxl` to create the actual workbook deterministically
+- Renderer role: use `openpyxl` inside the shared E2B/local artifact worker to create the actual workbook deterministically
 - Sheets: raw data, state x specialty summary, ICD-10 breakdown
 
 Report Agent:
@@ -261,7 +261,7 @@ The workflow uses an 85/100 approval threshold. If the judge returns `approved` 
 The graph state will preserve reusable intermediate results:
 
 - Filtered physician records
-- Preference summary
+- Inferred preference/filter summary
 - Aggregate statistics
 - Prior agent outputs from the current query
 - Judge feedback
@@ -303,7 +303,7 @@ The UI is a focused single-page workspace, not a marketing page.
 Main regions:
 
 - Query composer with large natural language input
-- Preference panel for ICD-10 codes, states/regions, specialties, and volume tier
+- Inferred scope panel showing filters extracted by the LLM tool call
 - Live agent trace with timing
 - Results panel with rendered markdown report, sandbox code/output/chart, and artifact download buttons
 - Physician data preview for transparency
@@ -382,7 +382,12 @@ These validation results are returned as `artifactValidations`, emitted in the t
 
 The assignment requires the Sandbox Agent to actually execute generated Python code. The safest long-term path is to use E2B as the primary execution environment. That keeps arbitrary generated code outside the FastAPI process and gives the demo a credible isolation story.
 
-The current implementation includes a restricted local `exec()` subprocess inspired by feedback-oracle style evaluation loops:
+The current implementation first uses E2B when `SANDBOX_PROVIDER=e2b` and `E2B_API_KEY` is configured. If E2B is unavailable, it falls back to restricted local subprocess execution. This same execution boundary is used in two places:
+
+- Sandbox Agent: LLM-generated analysis code over the filtered physician dataset
+- PPT/Excel artifact workers: deterministic renderer code for `python-pptx` and `openpyxl`
+
+The local analysis fallback is inspired by feedback-oracle style evaluation loops:
 
 ```text
 LLM generates Python analysis code
@@ -392,10 +397,12 @@ LLM generates Python analysis code
   -> subprocess returns stdout, stderr, chart path, and exit status
 ```
 
-This local runner is useful for the take-home demo and local development, but it should not be presented as equivalent to cloud/container isolation. The important safety boundary is that generated code never executes inside the main API server process.
+The local runner is useful for the take-home demo and local development, but it should not be presented as equivalent to cloud/container isolation. The important safety boundary is that generated code never executes inside the main API server process.
 
 Current local guardrails:
 
+- The query response includes `sandboxOutput.executionProvider`, so the UI and trace show whether E2B, local subprocess, or local fallback executed analysis code.
+- PPT/Excel artifacts store `provenance.renderExecution.executionProvider`, so downloads can be traced to E2B or the local artifact worker.
 - Generated code runs in a separate Python subprocess.
 - Code is AST-checked before execution.
 - Imports and dangerous calls such as `eval`, `exec`, `open`, `subprocess`, and network/process modules are blocked.
@@ -544,13 +551,14 @@ npm run build
 Current query behavior:
 
 - Requires `MISTRAL_API_KEY`.
-- Sends the orchestrator prompt, user query, preferences, and tool schemas to Mistral.
+- Sends the orchestrator prompt, user query, empty optional override fields, and tool schemas to Mistral.
+- Relies on Mistral tool calling to extract ICD-10 codes, geography, specialty, volume tier, and artifact intent from the query.
 - Uses `/query/stream` from the frontend so trace events render while the workflow is still running.
 - Executes `get_physician_data` through the same backend physician service used by `GET /physicians`.
-- Executes `call_ppt_agent` when selected and generates a downloadable `.pptx`.
-- Executes `call_excel_agent` when selected and generates a downloadable `.xlsx`.
+- Executes `call_ppt_agent` when selected and generates a downloadable `.pptx` through the shared E2B/local artifact worker.
+- Executes `call_excel_agent` when selected and generates a downloadable `.xlsx` through the shared E2B/local artifact worker.
 - Executes `call_report_agent` when selected, using the Report Agent prompt to generate markdown.
-- Executes `call_sandbox_agent` when selected, using the Sandbox Agent prompt to generate Python code and a restricted subprocess to execute it.
+- Executes `call_sandbox_agent` when selected, using the Sandbox Agent prompt to generate Python code and E2B or the restricted local subprocess fallback to execute it.
 - Records trace events for orchestration, data retrieval, artifact generation, sandbox execution, judge decisions, and targeted retries.
 - Routes `needs_revision` judge feedback back to the target agent once, replacing that agent's prior response artifact in the final response.
 
@@ -563,9 +571,9 @@ Current query behavior:
 5. Implement Mistral client and orchestrator tool definitions - basic client/tool loop done
 6. Add LangGraph state workflow around the orchestrator, context reuse, per-agent nodes, judge node, and targeted revision edge - done
 7. Implement Excel Agent and PPT Agent first - done
-8. Add React UI with query input, preference panel, streaming trace, and downloads - done
+8. Add React UI with query input, inferred scope display, streaming trace, and downloads - done
 9. Implement Report Agent - markdown done, optional DOCX pending
-10. Implement Sandbox Agent with restricted local execution and one retry on failure - done; E2B integration pending
+10. Implement Sandbox Agent with E2B execution, restricted local fallback, and one retry on failure - done
 11. Polish demo queries, tests, docs, and video script
 
 ## Known Limitations
@@ -573,9 +581,9 @@ Current query behavior:
 - The physician dataset is mock data, not real production physician intelligence.
 - Mistral free mode is rate-limited, so the demo should avoid unnecessary repeated LLM calls.
 - SQLite is intentionally chosen for portability, not multi-user production scale.
-- E2B requires an API key; local subprocess fallback will be restricted and clearly marked as a fallback.
+- E2B requires an API key and network access; local subprocess fallback is restricted and clearly marked as a fallback.
 - The local Python `exec()` fallback is designed for demo resilience, not production-grade arbitrary-code isolation.
-- Current `/query` implementation can generate PPTX, Excel, markdown reports, sandbox stdout, and chart artifacts. Optional DOCX reports and E2B cloud sandbox integration are still pending.
+- Current `/query` implementation can generate PPTX, Excel, markdown reports, sandbox stdout, and chart artifacts. Optional DOCX reports are still pending.
 - Browser visual QA was attempted, but the in-app Browser plugin failed to attach in this Windows sandbox. The frontend production build passes.
 - LangGraph targeted revision is limited to one retry and reruns one target agent at a time; a larger production workflow could support multi-agent revision plans.
 - The first implementation will optimize for the required assignment flow before adding memory or user accounts.
