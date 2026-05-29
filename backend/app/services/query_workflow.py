@@ -8,7 +8,7 @@ from sqlmodel import Session
 from backend.app.agents.tool_definitions import get_orchestrator_tools
 from backend.app.clients.mistral import MistralToolCall
 from backend.app.core.config import Settings
-from backend.app.schemas.artifact import ArtifactRef
+from backend.app.schemas.artifact import ArtifactRef, ArtifactValidationResult
 from backend.app.schemas.query import JudgeDecision, JudgeStatus, QueryRequest, QueryResponse, SandboxOutput
 from backend.app.schemas.trace import AgentName
 from backend.app.schemas.trace import TraceEvent
@@ -76,6 +76,7 @@ class QueryWorkflowState(TypedDict, total=False):
     answer_markdown: str | None
     final_answer: str
     artifacts: list[ArtifactRef]
+    artifact_validations: list[ArtifactValidationResult]
     sandbox_output: SandboxOutput | None
     judge_decision: JudgeDecision | None
     revision_count: int
@@ -202,10 +203,12 @@ def run_query_workflow(
             else "Orchestration completed without file artifacts."
         )
         final_answer = runtime.report_markdown or state.get("answer_markdown") or fallback_answer
+        artifact_validations = runtime.validate_generated_artifacts(trace=state["trace"])
         runtime.run_judge(
             trace=state["trace"],
             query=state["request"].query,
             artifacts=runtime.artifact_refs,
+            artifact_validations=artifact_validations,
             answer_markdown=final_answer,
             sandbox_output=runtime.sandbox_output,
             tool_calls=state["tool_call_records"],
@@ -234,6 +237,7 @@ def run_query_workflow(
         return {
             "final_answer": final_answer,
             "artifacts": runtime.artifact_refs,
+            "artifact_validations": artifact_validations,
             "sandbox_output": runtime.sandbox_output,
             "judge_decision": decision,
         }
@@ -303,6 +307,7 @@ def run_query_workflow(
             query=request.query,
             answer_markdown=state["final_answer"],
             artifacts=state["artifacts"],
+            artifact_validations=state.get("artifact_validations", []),
             sandbox_output=state.get("sandbox_output"),
             trace=state["trace"].events if request.include_trace else [],
             judge_decision=state.get("judge_decision"),

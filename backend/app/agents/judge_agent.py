@@ -2,7 +2,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from backend.app.schemas.artifact import ArtifactRef
+from backend.app.schemas.artifact import ArtifactRef, ArtifactValidationResult
 from backend.app.schemas.query import JudgeDecision, SandboxOutput
 from backend.app.services.prompts import load_prompt
 
@@ -15,6 +15,7 @@ def judge_outputs(
     generate_text: TextGenerator,
     query: str,
     artifacts: list[ArtifactRef],
+    artifact_validations: list[ArtifactValidationResult],
     answer_markdown: str | None,
     sandbox_output: SandboxOutput | None,
     tool_calls: list[dict[str, object]],
@@ -28,6 +29,9 @@ def judge_outputs(
                 {
                     "query": query,
                     "artifacts": [artifact.model_dump(by_alias=True) for artifact in artifacts],
+                    "artifactValidations": [
+                        validation.model_dump(by_alias=True) for validation in artifact_validations
+                    ],
                     "hasAnswerMarkdown": bool(answer_markdown),
                     "sandboxOutput": sandbox_output.model_dump(by_alias=True) if sandbox_output else None,
                     "toolCalls": tool_calls,

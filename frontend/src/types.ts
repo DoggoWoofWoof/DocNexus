@@ -7,6 +7,30 @@ export type ArtifactRef = {
   mimeType: string;
   downloadUrl: string;
   sourceAgent: string;
+  requestId?: string | null;
+  toolCallId?: string | null;
+  promptName?: string | null;
+  promptSha256?: string | null;
+  inputSha256?: string | null;
+  artifactSha256?: string | null;
+  fileSizeBytes?: number | null;
+  provenance: Record<string, unknown>;
+};
+
+export type ArtifactValidationCheck = {
+  name: string;
+  passed: boolean;
+  message: string;
+  metadata: Record<string, unknown>;
+};
+
+export type ArtifactValidationResult = {
+  artifactId: string;
+  artifactType: ArtifactType;
+  sourceAgent: string;
+  passed: boolean;
+  score: number;
+  checks: ArtifactValidationCheck[];
 };
 
 export type TraceEvent = {
@@ -39,6 +63,7 @@ export type QueryResponse = {
   query: string;
   answerMarkdown?: string | null;
   artifacts: ArtifactRef[];
+  artifactValidations: ArtifactValidationResult[];
   sandboxOutput?: SandboxOutput | null;
   trace: TraceEvent[];
   judgeDecision?: JudgeDecision | null;

@@ -396,3 +396,29 @@ Verification:
 - Ran Python compilation across the backend.
 - Ran a fake LangGraph workflow that generated an Excel artifact.
 - Confirmed the response artifact included `requestId`, `toolCallId`, `promptSha256`, `inputSha256`, `artifactSha256`, `fileSizeBytes`, and provenance metadata.
+
+## 2026-05-29 - Deterministic Artifact Validation
+
+What changed:
+
+- Added `ArtifactValidationCheck` and `ArtifactValidationResult` response schemas.
+- Added deterministic validators for PPTX, XLSX, markdown report, and chart artifacts.
+- Added `artifactValidations` to query responses.
+- Added a validation step before the LLM judge runs.
+- Passed validation results into the judge prompt payload.
+- Emitted validation scores in trace metadata.
+- Updated frontend response types and documentation.
+
+Why this came next:
+
+- The LLM judge should not have to infer file correctness from filenames alone.
+- Deterministic checks are better for structural requirements such as required workbook sheets and slide counts.
+- The LLM judge can then focus on semantic quality, relevance, grounding, and preference alignment.
+
+Verification:
+
+- Ran Python compilation across the backend.
+- Ran a fake LangGraph workflow that generated an Excel artifact.
+- Confirmed the validator returned `passed=true` and `score=100`.
+- Confirmed the judge received `artifactValidations`.
+- Confirmed the trace includes the deterministic validation step.

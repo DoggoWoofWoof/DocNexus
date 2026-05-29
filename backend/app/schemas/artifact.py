@@ -30,3 +30,19 @@ class ArtifactRef(CamelModel):
     artifact_sha256: str | None = None
     file_size_bytes: int | None = None
     provenance: dict[str, Any] = Field(default_factory=dict)
+
+
+class ArtifactValidationCheck(CamelModel):
+    name: str
+    passed: bool
+    message: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ArtifactValidationResult(CamelModel):
+    artifact_id: str
+    artifact_type: ArtifactType
+    source_agent: str
+    passed: bool
+    score: int
+    checks: list[ArtifactValidationCheck] = Field(default_factory=list)

@@ -11,7 +11,7 @@ from backend.app.agents.tool_definitions import get_orchestrator_tools
 from backend.app.agents.excel_agent import generate_excel_workbook
 from backend.app.clients.mistral import MistralToolCall, MistralToolClient
 from backend.app.core.config import Settings
-from backend.app.schemas.artifact import ArtifactRef
+from backend.app.schemas.artifact import ArtifactRef, ArtifactValidationResult
 from backend.app.schemas.query import JudgeDecision, QueryRequest, QueryResponse
 from backend.app.schemas.trace import AgentName
 from backend.app.schemas.tools import ExcelAgentArgs, PptAgentArgs, ReportAgentArgs, SandboxAgentArgs
@@ -19,6 +19,7 @@ from backend.app.services.physicians import list_physicians
 from backend.app.services.prompts import load_prompt
 from backend.app.services.trace import TraceBuilder
 from backend.app.services.artifacts import hash_payload, hash_text
+from backend.app.services.artifact_validation import validate_artifacts
 
 
 AGENT_TOOL_NAMES = {
@@ -50,6 +51,7 @@ class OrchestratorService:
     def reset_context(self) -> None:
         self._physician_context: list[dict[str, object]] = []
         self._artifact_refs: list[ArtifactRef] = []
+        self._artifact_validations: list[ArtifactValidationResult] = []
         self._report_markdown: str | None = None
         self._sandbox_output = None
         self._judge_decision = None
@@ -57,6 +59,10 @@ class OrchestratorService:
     @property
     def artifact_refs(self) -> list[ArtifactRef]:
         return self._artifact_refs
+
+    @property
+    def artifact_validations(self) -> list[ArtifactValidationResult]:
+        return self._artifact_validations
 
     @property
     def physician_context(self) -> list[dict[str, object]]:
@@ -81,6 +87,9 @@ class OrchestratorService:
         source_agent = SOURCE_AGENT_BY_TOOL_NAME.get(tool_name)
         if source_agent:
             self._artifact_refs = [ref for ref in self._artifact_refs if ref.source_agent != source_agent]
+            self._artifact_validations = [
+                result for result in self._artifact_validations if result.source_agent != source_agent
+            ]
 
         if tool_name == "call_report_agent":
             self._report_markdown = None
@@ -162,10 +171,12 @@ class OrchestratorService:
             else "Orchestration completed without file artifacts."
         )
         final_answer = self._report_markdown or answer_markdown or fallback_answer
+        self.validate_generated_artifacts(trace=trace)
         self.run_judge(
             trace=trace,
             query=request.query,
             artifacts=self._artifact_refs,
+            artifact_validations=self._artifact_validations,
             answer_markdown=final_answer,
             sandbox_output=self._sandbox_output,
             tool_calls=tool_call_records,
@@ -176,6 +187,7 @@ class OrchestratorService:
             query=request.query,
             answer_markdown=final_answer,
             artifacts=self._artifact_refs,
+            artifact_validations=self._artifact_validations,
             sandbox_output=self._sandbox_output,
             trace=trace.events if request.include_trace else [],
             judge_decision=self._judge_decision,
@@ -201,6 +213,7 @@ class OrchestratorService:
         trace: TraceBuilder,
         query: str,
         artifacts: list[ArtifactRef],
+        artifact_validations: list[ArtifactValidationResult],
         answer_markdown: str | None,
         sandbox_output,
         tool_calls: list[dict[str, object]],
@@ -209,10 +222,39 @@ class OrchestratorService:
             trace=trace,
             query=query,
             artifacts=artifacts,
+            artifact_validations=artifact_validations,
             answer_markdown=answer_markdown,
             sandbox_output=sandbox_output,
             tool_calls=tool_calls,
         )
+
+    def validate_generated_artifacts(self, *, trace: TraceBuilder) -> list[ArtifactValidationResult]:
+        if not self._artifact_refs:
+            self._artifact_validations = []
+            return self._artifact_validations
+
+        start_id = trace.started(
+            agent=AgentName.judge,
+            message="Running deterministic artifact validation.",
+            metadata={"artifactIds": [artifact.id for artifact in self._artifact_refs]},
+        )
+        self._artifact_validations = validate_artifacts(
+            self.session,
+            [artifact.id for artifact in self._artifact_refs],
+        )
+        failed = [result for result in self._artifact_validations if not result.passed]
+        trace.completed(
+            started_event_id=start_id,
+            agent=AgentName.judge,
+            message=f"Validated {len(self._artifact_validations)} artifact(s).",
+            metadata={
+                "failedArtifactIds": [result.artifact_id for result in failed],
+                "scores": {
+                    result.artifact_id: result.score for result in self._artifact_validations
+                },
+            },
+        )
+        return self._artifact_validations
 
     def build_user_message(self, request: QueryRequest) -> str:
         return self._build_user_message(request)
@@ -502,6 +544,7 @@ class OrchestratorService:
         trace: TraceBuilder,
         query: str,
         artifacts: list[ArtifactRef],
+        artifact_validations: list[ArtifactValidationResult],
         answer_markdown: str | None,
         sandbox_output,
         tool_calls: list[dict[str, object]],
@@ -514,6 +557,7 @@ class OrchestratorService:
             generate_text=lambda messages: self.mistral.complete_text(messages=messages),
             query=query,
             artifacts=artifacts,
+            artifact_validations=artifact_validations,
             answer_markdown=answer_markdown,
             sandbox_output=sandbox_output,
             tool_calls=tool_calls,
@@ -522,7 +566,12 @@ class OrchestratorService:
             started_event_id=start_id,
             agent=AgentName.judge,
             message=f"Judge decision: {self._judge_decision.status.value}.",
-            metadata={"reason": self._judge_decision.reason},
+            metadata={
+                "reason": self._judge_decision.reason,
+                "artifactValidationScores": {
+                    result.artifact_id: result.score for result in artifact_validations
+                },
+            },
         )
 
     def _build_user_message(self, request: QueryRequest) -> str:

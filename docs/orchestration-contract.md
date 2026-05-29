@@ -107,6 +107,23 @@ The response shape is:
       "fileSizeBytes": 32894
     }
   ],
+  "artifactValidations": [
+    {
+      "artifactId": "art_123",
+      "artifactType": "pptx",
+      "sourceAgent": "ppt",
+      "passed": true,
+      "score": 100,
+      "checks": [
+        {
+          "name": "slide_count",
+          "passed": true,
+          "message": "PPTX has at least four slides.",
+          "metadata": {"slideCount": 4}
+        }
+      ]
+    }
+  ],
   "sandboxOutput": null,
   "trace": [],
   "judgeDecision": {
@@ -129,6 +146,17 @@ Every generated artifact stores provenance metadata in SQLite and returns it in 
 - `provenance`: lightweight extra metadata such as model name, tool name, source agent, and input record count.
 
 This makes artifact traceability explicit. Reviewers can see not just that a file exists, but which prompt, payload, tool call, and model path produced it.
+
+## Deterministic Artifact Validation
+
+Before the LLM judge makes a semantic decision, backend validators inspect the generated artifacts:
+
+- PPTX: file exists, at least four slides, title text, overview slide, insights slide, top physicians slide.
+- XLSX: required sheets exist and contain data rows.
+- Markdown: report exists, is substantive, and includes required section headings.
+- Chart PNG/SVG: file exists, is non-empty, and PNG files have a valid signature.
+
+The validators produce `artifactValidations` with per-check pass/fail data and a deterministic score. These results are returned to the UI, included in trace metadata, and passed to the LLM judge as grounding evidence.
 
 ## Trace Events
 

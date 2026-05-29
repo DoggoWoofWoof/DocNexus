@@ -355,6 +355,15 @@ The browser will never generate PPTX or XLSX files. This keeps the implementatio
 
 The provenance hashes are intentionally stored with each artifact so the demo can answer: "Which prompt, model, tool call, and input payload produced this file?" This gives the judge and trace system a stronger audit trail than only storing filenames.
 
+Before the LLM judge runs, the backend performs deterministic artifact validation:
+
+- PPTX files are inspected for slide count and required slide concepts.
+- XLSX files are inspected for required sheets and data rows.
+- Markdown reports are inspected for required report sections.
+- Chart files are inspected for file presence, size, and PNG signature when applicable.
+
+These validation results are returned as `artifactValidations`, emitted in the trace, and passed into the LLM judge as evidence.
+
 ## Sandbox Strategy
 
 The assignment requires the Sandbox Agent to actually execute generated Python code. The safest long-term path is to use E2B as the primary execution environment. That keeps arbitrary generated code outside the FastAPI process and gives the demo a credible isolation story.

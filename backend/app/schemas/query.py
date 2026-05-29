@@ -3,7 +3,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from backend.app.schemas.artifact import ArtifactRef, ArtifactType
+from backend.app.schemas.artifact import ArtifactRef, ArtifactType, ArtifactValidationResult
 from backend.app.schemas.base import CamelModel
 from backend.app.schemas.trace import TraceEvent
 
@@ -56,6 +56,7 @@ class QueryResponse(CamelModel):
     query: str
     answer_markdown: str | None = None
     artifacts: list[ArtifactRef] = Field(default_factory=list)
+    artifact_validations: list[ArtifactValidationResult] = Field(default_factory=list)
     sandbox_output: SandboxOutput | None = None
     trace: list[TraceEvent] = Field(default_factory=list)
     judge_decision: JudgeDecision | None = None
