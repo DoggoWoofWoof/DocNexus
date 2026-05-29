@@ -54,4 +54,15 @@ class Artifact(SQLModel, table=True):
     mime_type: str
     local_path: str
     source_agent: str = Field(index=True)
+    request_id: str | None = Field(default=None, index=True)
+    tool_call_id: str | None = Field(default=None, index=True)
+    prompt_name: str | None = None
+    prompt_sha256: str | None = Field(default=None, index=True)
+    input_sha256: str | None = Field(default=None, index=True)
+    artifact_sha256: str | None = Field(default=None, index=True)
+    file_size_bytes: int | None = None
+    provenance: dict[str, Any] = Field(
+        default_factory=dict,
+        sa_column=Column(JSON, nullable=False),
+    )
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC), index=True)

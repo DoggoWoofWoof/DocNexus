@@ -373,3 +373,26 @@ Verification:
 - Tested `POST /query/stream` with a fake Mistral client.
 - Confirmed the stream emitted multiple `trace` events followed by one `result` event.
 - Confirmed `/query/stream` returns the expected `503` when `MISTRAL_API_KEY` is missing.
+
+## 2026-05-29 - Artifact Provenance Hashes
+
+What changed:
+
+- Added request, tool call, prompt, input, artifact hash, file size, and provenance fields to artifact metadata.
+- Added SQLite startup migration logic so existing local databases receive the new nullable artifact columns.
+- Added stable SHA-256 helpers for prompt text, structured input payloads, and generated files.
+- Updated PPT, Excel, Report, and Sandbox artifact generation to finalize file hashes after writing files.
+- Returned provenance fields in `ArtifactRef` API responses.
+- Updated README and orchestration contract documentation.
+
+Why this came next:
+
+- Artifact traceability is a strong interview story for agent systems.
+- The judge and trace layers need more than a filename to explain why an artifact is grounded.
+- Prompt and input hashes make it possible to answer which prompt and structured payload produced a file.
+
+Verification:
+
+- Ran Python compilation across the backend.
+- Ran a fake LangGraph workflow that generated an Excel artifact.
+- Confirmed the response artifact included `requestId`, `toolCallId`, `promptSha256`, `inputSha256`, `artifactSha256`, `fileSizeBytes`, and provenance metadata.

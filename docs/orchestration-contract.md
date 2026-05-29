@@ -97,7 +97,14 @@ The response shape is:
       "filename": "high_volume_nsclc_oncologists.pptx",
       "mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
       "downloadUrl": "/artifacts/art_123",
-      "sourceAgent": "ppt"
+      "sourceAgent": "ppt",
+      "requestId": "req_123",
+      "toolCallId": "call_456",
+      "promptName": "ppt_agent.md",
+      "promptSha256": "3f...",
+      "inputSha256": "9a...",
+      "artifactSha256": "b4...",
+      "fileSizeBytes": 32894
     }
   ],
   "sandboxOutput": null,
@@ -109,6 +116,19 @@ The response shape is:
   "metadata": {}
 }
 ```
+
+## Artifact Provenance
+
+Every generated artifact stores provenance metadata in SQLite and returns it in the API response:
+
+- `requestId`: the workflow request that produced the artifact.
+- `toolCallId`: the exact orchestrator tool call that produced the artifact.
+- `promptName` and `promptSha256`: the source-controlled prompt associated with the agent.
+- `inputSha256`: a stable hash of the structured agent input.
+- `artifactSha256` and `fileSizeBytes`: a hash and byte count of the generated file on disk.
+- `provenance`: lightweight extra metadata such as model name, tool name, source agent, and input record count.
+
+This makes artifact traceability explicit. Reviewers can see not just that a file exists, but which prompt, payload, tool call, and model path produced it.
 
 ## Trace Events
 

@@ -1,4 +1,7 @@
 from enum import Enum
+from typing import Any
+
+from pydantic import Field
 
 from backend.app.schemas.base import CamelModel
 
@@ -19,3 +22,11 @@ class ArtifactRef(CamelModel):
     mime_type: str
     download_url: str
     source_agent: str
+    request_id: str | None = None
+    tool_call_id: str | None = None
+    prompt_name: str | None = None
+    prompt_sha256: str | None = None
+    input_sha256: str | None = None
+    artifact_sha256: str | None = None
+    file_size_bytes: int | None = None
+    provenance: dict[str, Any] = Field(default_factory=dict)

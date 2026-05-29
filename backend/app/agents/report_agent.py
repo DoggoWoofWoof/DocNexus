@@ -7,7 +7,7 @@ from sqlmodel import Session
 from backend.app.core.config import Settings
 from backend.app.schemas.artifact import ArtifactRef, ArtifactType
 from backend.app.schemas.physician import PhysicianRead
-from backend.app.services.artifacts import register_artifact, to_artifact_ref
+from backend.app.services.artifacts import finalize_artifact_file, register_artifact, to_artifact_ref
 from backend.app.services.prompts import load_prompt
 
 
@@ -25,6 +25,7 @@ def generate_report(
     icd10_context: list[str],
     geographic_scope: list[str],
     revision_instructions: str | None = None,
+    artifact_provenance: dict[str, object] | None = None,
 ) -> tuple[str, ArtifactRef]:
     prompt = load_prompt("report_agent.md")
     messages: list[dict[str, object]] = [
@@ -53,8 +54,10 @@ def generate_report(
         artifact_type=ArtifactType.markdown,
         filename=filename,
         source_agent="report",
+        **(artifact_provenance or {}),
     )
     path.write_text(markdown, encoding="utf-8")
+    finalize_artifact_file(session, artifact, path)
     return markdown, to_artifact_ref(artifact)
 
 

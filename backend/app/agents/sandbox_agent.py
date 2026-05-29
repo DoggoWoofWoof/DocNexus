@@ -13,7 +13,7 @@ from sqlmodel import Session
 from backend.app.core.config import Settings
 from backend.app.schemas.artifact import ArtifactType
 from backend.app.schemas.query import SandboxOutput
-from backend.app.services.artifacts import register_artifact
+from backend.app.services.artifacts import finalize_artifact_file, register_artifact
 from backend.app.services.prompts import load_prompt
 
 
@@ -88,6 +88,7 @@ def generate_and_run_sandbox_code(
     dataset: list[dict[str, object]],
     chart_type: str | None,
     revision_instructions: str | None = None,
+    artifact_provenance: dict[str, object] | None = None,
 ) -> SandboxOutput:
     code = _generate_code(
         generate_text=generate_text,
@@ -124,8 +125,10 @@ def generate_and_run_sandbox_code(
             artifact_type=ArtifactType.chart_png,
             filename="sandbox_chart.png",
             source_agent="sandbox",
+            **(artifact_provenance or {}),
         )
         shutil.copyfile(chart_path, artifact_path)
+        finalize_artifact_file(session, artifact, artifact_path)
         result.chart_artifact_id = artifact.id
 
     return result

@@ -344,9 +344,16 @@ Generated artifacts will be created server-side and stored under a local artifac
 - MIME type
 - local path
 - source agent
+- request id
+- tool call id
+- prompt name and prompt SHA-256
+- input payload SHA-256
+- generated file SHA-256 and size
 - created timestamp
 
 The browser will never generate PPTX or XLSX files. This keeps the implementation aligned with the assignment requirement and makes artifact generation testable from the backend.
+
+The provenance hashes are intentionally stored with each artifact so the demo can answer: "Which prompt, model, tool call, and input payload produced this file?" This gives the judge and trace system a stronger audit trail than only storing filenames.
 
 ## Sandbox Strategy
 

@@ -10,7 +10,7 @@ from sqlmodel import Session
 from backend.app.core.config import Settings
 from backend.app.schemas.artifact import ArtifactRef, ArtifactType
 from backend.app.schemas.physician import PhysicianRead
-from backend.app.services.artifacts import register_artifact, to_artifact_ref
+from backend.app.services.artifacts import finalize_artifact_file, register_artifact, to_artifact_ref
 
 
 HEADER_FILL = PatternFill(fill_type="solid", fgColor="1F4E79")
@@ -26,6 +26,7 @@ def generate_excel_workbook(
     physicians: list[PhysicianRead],
     dimensions: list[str],
     icd10_codes: list[str],
+    artifact_provenance: dict[str, object] | None = None,
 ) -> ArtifactRef:
     filename = f"{_slugify(analysis_type or 'physician_breakdown')}.xlsx"
     artifact, path = register_artifact(
@@ -34,6 +35,7 @@ def generate_excel_workbook(
         artifact_type=ArtifactType.xlsx,
         filename=filename,
         source_agent="excel",
+        **(artifact_provenance or {}),
     )
 
     workbook = Workbook()
@@ -52,6 +54,7 @@ def generate_excel_workbook(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(path)
+    finalize_artifact_file(session, artifact, path)
     return to_artifact_ref(artifact)
 
 

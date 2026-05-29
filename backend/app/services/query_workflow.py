@@ -94,7 +94,8 @@ def run_query_workflow(
     graph = StateGraph(QueryWorkflowState)
 
     def initialize_node(state: QueryWorkflowState) -> dict[str, object]:
-        runtime = OrchestratorService(settings=settings, session=session)
+        request_id = f"req_{uuid4().hex[:12]}"
+        runtime = OrchestratorService(settings=settings, session=session, request_id=request_id)
         trace = TraceBuilder(on_event=trace_sink)
         start_id = trace.started(
             agent=AgentName.orchestrator,
@@ -103,7 +104,7 @@ def run_query_workflow(
         )
 
         return {
-            "request_id": f"req_{uuid4().hex[:12]}",
+            "request_id": request_id,
             "runtime": runtime,
             "trace": trace,
             "orchestrator_start_id": start_id,

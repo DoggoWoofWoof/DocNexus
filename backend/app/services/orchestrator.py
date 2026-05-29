@@ -18,6 +18,7 @@ from backend.app.schemas.tools import ExcelAgentArgs, PptAgentArgs, ReportAgentA
 from backend.app.services.physicians import list_physicians
 from backend.app.services.prompts import load_prompt
 from backend.app.services.trace import TraceBuilder
+from backend.app.services.artifacts import hash_payload, hash_text
 
 
 AGENT_TOOL_NAMES = {
@@ -36,11 +37,15 @@ SOURCE_AGENT_BY_TOOL_NAME = {
 
 
 class OrchestratorService:
-    def __init__(self, *, settings: Settings, session: Session):
+    def __init__(self, *, settings: Settings, session: Session, request_id: str | None = None):
         self.settings = settings
         self.session = session
         self.mistral = MistralToolClient(settings)
+        self.request_id = request_id
         self.reset_context()
+
+    def set_request_id(self, request_id: str) -> None:
+        self.request_id = request_id
 
     def reset_context(self) -> None:
         self._physician_context: list[dict[str, object]] = []
@@ -84,6 +89,7 @@ class OrchestratorService:
 
     def run(self, request: QueryRequest) -> QueryResponse:
         request_id = f"req_{uuid4().hex[:12]}"
+        self.set_request_id(request_id)
         trace = TraceBuilder()
         prompt = load_prompt("orchestrator.md")
         tools = get_orchestrator_tools()
@@ -297,6 +303,11 @@ class OrchestratorService:
             physicians=excel_args.physician_list,
             dimensions=excel_args.dimensions,
             icd10_codes=excel_args.icd10_codes,
+            artifact_provenance=self._artifact_provenance(
+                tool_call=tool_call,
+                prompt_name="excel_agent.md",
+                payload=excel_args.model_dump(by_alias=True),
+            ),
         )
         self._artifact_refs.append(artifact_ref)
 
@@ -351,6 +362,11 @@ class OrchestratorService:
             icd10_context=report_args.icd10_context,
             geographic_scope=report_args.geographic_scope,
             revision_instructions=report_args.revision_instructions,
+            artifact_provenance=self._artifact_provenance(
+                tool_call=tool_call,
+                prompt_name="report_agent.md",
+                payload=report_args.model_dump(by_alias=True),
+            ),
         )
         self._report_markdown = markdown
         self._artifact_refs.append(artifact_ref)
@@ -397,6 +413,11 @@ class OrchestratorService:
             dataset=sandbox_args.dataset,
             chart_type=sandbox_args.chart_type,
             revision_instructions=sandbox_args.revision_instructions,
+            artifact_provenance=self._artifact_provenance(
+                tool_call=tool_call,
+                prompt_name="sandbox_agent.md",
+                payload=sandbox_args.model_dump(by_alias=True),
+            ),
         )
         self._sandbox_output = output
 
@@ -452,6 +473,11 @@ class OrchestratorService:
             icd10_codes=ppt_args.icd10_codes,
             slide_count=ppt_args.slide_count,
             style_notes=_append_revision_note(ppt_args.style_notes, ppt_args.revision_instructions),
+            artifact_provenance=self._artifact_provenance(
+                tool_call=tool_call,
+                prompt_name="ppt_agent.md",
+                payload=ppt_args.model_dump(by_alias=True),
+            ),
         )
         self._artifact_refs.append(artifact_ref)
 
@@ -507,6 +533,28 @@ class OrchestratorService:
         }
         return json.dumps(payload)
 
+    def _artifact_provenance(
+        self,
+        *,
+        tool_call: MistralToolCall,
+        prompt_name: str,
+        payload: object,
+    ) -> dict[str, object]:
+        prompt = load_prompt(prompt_name)
+        return {
+            "request_id": self.request_id,
+            "tool_call_id": tool_call.id,
+            "prompt_name": prompt_name,
+            "prompt_sha256": hash_text(prompt),
+            "input_sha256": hash_payload(payload),
+            "provenance": {
+                "model": self.settings.mistral_model,
+                "toolName": tool_call.name,
+                "sourceAgent": SOURCE_AGENT_BY_TOOL_NAME.get(tool_call.name, tool_call.name),
+                "inputRecordCount": _record_count(payload),
+            },
+        }
+
     @staticmethod
     def _assistant_tool_call_message(tool_calls: list[MistralToolCall]) -> dict[str, object]:
         return {
@@ -532,3 +580,13 @@ def _append_revision_note(existing: str | None, revision_instructions: str | Non
     if not existing:
         return f"Revision instructions: {revision_instructions}"
     return f"{existing}\nRevision instructions: {revision_instructions}"
+
+
+def _record_count(payload: object) -> int | None:
+    if not isinstance(payload, dict):
+        return None
+    for key in ("physicianList", "dataset"):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return len(value)
+    return None

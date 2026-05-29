@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -30,6 +32,12 @@ def register_artifact(
     artifact_type: ArtifactType,
     filename: str,
     source_agent: str,
+    request_id: str | None = None,
+    tool_call_id: str | None = None,
+    prompt_name: str | None = None,
+    prompt_sha256: str | None = None,
+    input_sha256: str | None = None,
+    provenance: dict[str, object] | None = None,
 ) -> tuple[Artifact, Path]:
     artifact_id = new_artifact_id()
     artifact_dir = settings.resolved_artifact_dir
@@ -43,11 +51,26 @@ def register_artifact(
         mime_type=MIME_TYPES[artifact_type],
         local_path=str(path),
         source_agent=source_agent,
+        request_id=request_id,
+        tool_call_id=tool_call_id,
+        prompt_name=prompt_name,
+        prompt_sha256=prompt_sha256,
+        input_sha256=input_sha256,
+        provenance=provenance or {},
     )
     session.add(artifact)
     session.commit()
     session.refresh(artifact)
     return artifact, path
+
+
+def finalize_artifact_file(session: Session, artifact: Artifact, path: Path) -> Artifact:
+    artifact.artifact_sha256 = hash_file(path)
+    artifact.file_size_bytes = path.stat().st_size
+    session.add(artifact)
+    session.commit()
+    session.refresh(artifact)
+    return artifact
 
 
 def get_artifact(session: Session, artifact_id: str) -> Artifact:
@@ -68,4 +91,28 @@ def to_artifact_ref(artifact: Artifact) -> ArtifactRef:
         mime_type=artifact.mime_type,
         download_url=f"/artifacts/{artifact.id}",
         source_agent=artifact.source_agent,
+        request_id=artifact.request_id,
+        tool_call_id=artifact.tool_call_id,
+        prompt_name=artifact.prompt_name,
+        prompt_sha256=artifact.prompt_sha256,
+        input_sha256=artifact.input_sha256,
+        artifact_sha256=artifact.artifact_sha256,
+        file_size_bytes=artifact.file_size_bytes,
+        provenance=artifact.provenance,
     )
+
+
+def hash_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def hash_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def hash_payload(value: object) -> str:
+    return hash_text(json.dumps(value, sort_keys=True, default=str, separators=(",", ":")))

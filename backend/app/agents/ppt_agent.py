@@ -10,7 +10,7 @@ from sqlmodel import Session
 from backend.app.core.config import Settings
 from backend.app.schemas.artifact import ArtifactRef, ArtifactType
 from backend.app.schemas.physician import PhysicianRead
-from backend.app.services.artifacts import register_artifact, to_artifact_ref
+from backend.app.services.artifacts import finalize_artifact_file, register_artifact, to_artifact_ref
 
 
 ACCENT = RGBColor(31, 78, 121)
@@ -28,6 +28,7 @@ def generate_ppt_deck(
     icd10_codes: list[str],
     slide_count: int,
     style_notes: str | None = None,
+    artifact_provenance: dict[str, object] | None = None,
 ) -> ArtifactRef:
     filename = f"{_slugify(topic or 'physician_summary')}.pptx"
     artifact, path = register_artifact(
@@ -36,6 +37,7 @@ def generate_ppt_deck(
         artifact_type=ArtifactType.pptx,
         filename=filename,
         source_agent="ppt",
+        **(artifact_provenance or {}),
     )
 
     deck = Presentation()
@@ -49,6 +51,7 @@ def generate_ppt_deck(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     deck.save(path)
+    finalize_artifact_file(session, artifact, path)
     return to_artifact_ref(artifact)
 
 
