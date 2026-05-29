@@ -55,7 +55,7 @@ The current `POST /query` and `POST /query/stream` endpoints accept:
 }
 ```
 
-The frontend can provide structured preferences, but the orchestrator still has to interpret the natural language query and decide which tools to call.
+The frontend can provide structured preferences, but the orchestrator still has to interpret the natural language query and decide which tools to call. Non-empty preferences are treated as explicit overrides on the `get_physician_data` tool call, which keeps the preference panel meaningful while preserving LLM-based artifact routing.
 
 ## Query Streaming
 

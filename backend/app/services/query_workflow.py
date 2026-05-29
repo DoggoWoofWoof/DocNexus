@@ -170,7 +170,7 @@ def run_query_workflow(
 
         tool_calls = _order_tool_calls(
             [
-                _guard_tool_arguments_for_query(tool_call, state["request"].query, state["trace"])
+                _guard_tool_arguments_for_query(tool_call, state["request"], state["trace"])
                 for tool_call in model_message.tool_calls
             ]
         )
@@ -592,29 +592,70 @@ def _fallback_answer(runtime: OrchestratorService) -> str:
 
 def _guard_tool_arguments_for_query(
     tool_call: MistralToolCall,
-    query: str,
+    request: QueryRequest,
     trace: TraceBuilder,
 ) -> MistralToolCall:
     if tool_call.name != "get_physician_data":
         return tool_call
 
+    query = request.query
     arguments = dict(tool_call.arguments)
     removed: dict[str, object] = {}
-    if arguments.get("specialty") and not _query_explicitly_mentions_specialty(query):
+    has_specialty_override = bool(request.preferences.specialties)
+    if arguments.get("specialty") and not has_specialty_override and not _query_explicitly_mentions_specialty(query):
         removed["specialty"] = arguments.pop("specialty")
 
-    if not removed:
-        return tool_call
+    arguments, overrides = _apply_preference_overrides(arguments, request)
 
-    trace.retrying(
-        agent=AgentName.orchestrator,
-        message="Removed inferred filters that were not stated in the query.",
-        metadata={
-            "removedFilters": removed,
-            "reason": "The user asked for NSCLC prescribers, not a specific specialty subset.",
-        },
-    )
+    if removed:
+        trace.retrying(
+            agent=AgentName.orchestrator,
+            message="Removed inferred filters that were not stated in the query.",
+            metadata={
+                "removedFilters": removed,
+                "reason": "The user asked for NSCLC prescribers, not a specific specialty subset.",
+            },
+        )
+    if overrides:
+        trace.completed(
+            started_event_id=None,
+            agent=AgentName.orchestrator,
+            message="Applied structured preference overrides.",
+            metadata={"overrides": overrides},
+        )
+
+    if not removed and not overrides:
+        return tool_call
     return MistralToolCall(id=tool_call.id, name=tool_call.name, arguments=arguments)
+
+
+def _apply_preference_overrides(
+    arguments: dict[str, object],
+    request: QueryRequest,
+) -> tuple[dict[str, object], dict[str, object]]:
+    preferences = request.preferences
+    overrides: dict[str, object] = {}
+
+    if preferences.specialties:
+        arguments["specialty"] = preferences.specialties
+        overrides["specialty"] = preferences.specialties
+    if preferences.states:
+        arguments["state"] = preferences.states
+        overrides["state"] = preferences.states
+    if preferences.regions:
+        arguments["region"] = preferences.regions
+        overrides["region"] = preferences.regions
+    if preferences.icd10_codes:
+        arguments["icd10_codes"] = preferences.icd10_codes
+        overrides["icd10_codes"] = preferences.icd10_codes
+    if preferences.volume_threshold:
+        arguments["volume_threshold"] = preferences.volume_threshold.value
+        overrides["volume_threshold"] = preferences.volume_threshold.value
+    if preferences.board_certified is not None:
+        arguments["board_certified"] = preferences.board_certified
+        overrides["board_certified"] = preferences.board_certified
+
+    return arguments, overrides
 
 
 def _query_explicitly_mentions_specialty(query: str) -> bool:

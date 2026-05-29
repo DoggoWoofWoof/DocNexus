@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import {
   BarChart3,
   BrainCircuit,
+  ChevronDown,
   Download,
   FileSpreadsheet,
   FileText,
@@ -11,11 +12,13 @@ import {
   Loader2,
   Play,
   Presentation,
+  RotateCcw,
   Search,
+  SlidersHorizontal,
 } from "lucide-react";
 
 import { API_BASE_URL, artifactUrl, runQueryStream } from "./api";
-import type { ArtifactRef, ArtifactType, Physician, QueryResponse, TraceEvent } from "./types";
+import type { ArtifactRef, ArtifactType, Physician, QueryPreferences, QueryResponse, TraceEvent } from "./types";
 
 const SAMPLE_QUERIES = [
   "Give me a slide deck and an Excel breakdown of high-volume NSCLC oncologists in California and New York.",
@@ -26,8 +29,28 @@ const SAMPLE_QUERIES = [
 
 const DEFAULT_QUERY = SAMPLE_QUERIES[0];
 
+type PreferenceDraft = {
+  icd10Codes: string;
+  states: string;
+  regions: string;
+  specialties: string;
+  volumeThreshold: "" | "low" | "high" | "very_high";
+  boardCertified: "" | "true" | "false";
+};
+
+const EMPTY_PREFERENCES: PreferenceDraft = {
+  icd10Codes: "",
+  states: "",
+  regions: "",
+  specialties: "",
+  volumeThreshold: "",
+  boardCertified: "",
+};
+
 function App() {
   const [query, setQuery] = useState(DEFAULT_QUERY);
+  const [preferences, setPreferences] = useState<PreferenceDraft>(EMPTY_PREFERENCES);
+  const [showPreferences, setShowPreferences] = useState(false);
   const [response, setResponse] = useState<QueryResponse | null>(null);
   const [liveTrace, setLiveTrace] = useState<TraceEvent[]>([]);
   const [physicians, setPhysicians] = useState<Physician[]>([]);
@@ -44,14 +67,7 @@ function App() {
       const result = await runQueryStream(
         {
           query,
-          preferences: {
-            icd10Codes: [],
-            states: [],
-            regions: [],
-            specialties: [],
-            volumeThreshold: null,
-            boardCertified: null,
-          },
+          preferences: toQueryPreferences(preferences),
           requestedArtifacts: [],
           includeTrace: true,
         },
@@ -103,6 +119,22 @@ function App() {
               </button>
             ))}
           </div>
+
+          <div className="preference-header">
+            <button className="secondary compact" type="button" onClick={() => setShowPreferences((value) => !value)}>
+              <SlidersHorizontal size={16} />
+              Preferences
+              <ChevronDown className={showPreferences ? "chevron open" : "chevron"} size={16} />
+            </button>
+            {hasPreferenceDraft(preferences) ? (
+              <button className="secondary compact" type="button" onClick={() => setPreferences(EMPTY_PREFERENCES)}>
+                <RotateCcw size={16} />
+                Clear
+              </button>
+            ) : null}
+          </div>
+
+          {showPreferences ? <PreferencePanel preferences={preferences} onChange={setPreferences} /> : null}
 
           <div className="action-row">
             <button className="primary" type="button" onClick={handleRunQuery} disabled={isRunning || query.trim().length < 3}>
@@ -192,6 +224,56 @@ function App() {
         {physicians.length ? <PhysicianTable physicians={physicians} /> : <EmptyState text="Preview filtered physicians before or after running a query." />}
       </section>
     </main>
+  );
+}
+
+function PreferencePanel({
+  preferences,
+  onChange,
+}: {
+  preferences: PreferenceDraft;
+  onChange: (preferences: PreferenceDraft) => void;
+}) {
+  function update<K extends keyof PreferenceDraft>(key: K, value: PreferenceDraft[K]) {
+    onChange({ ...preferences, [key]: value });
+  }
+
+  return (
+    <div className="preference-grid">
+      <label className="field">
+        <span>ICD-10</span>
+        <input value={preferences.icd10Codes} onChange={(event) => update("icd10Codes", event.target.value)} placeholder="C341, C342" />
+      </label>
+      <label className="field">
+        <span>States</span>
+        <input value={preferences.states} onChange={(event) => update("states", event.target.value)} placeholder="CA, NY" />
+      </label>
+      <label className="field">
+        <span>Regions</span>
+        <input value={preferences.regions} onChange={(event) => update("regions", event.target.value)} placeholder="northeast" />
+      </label>
+      <label className="field">
+        <span>Specialties</span>
+        <input value={preferences.specialties} onChange={(event) => update("specialties", event.target.value)} placeholder="Medical Oncology" />
+      </label>
+      <label className="field">
+        <span>Volume</span>
+        <select value={preferences.volumeThreshold} onChange={(event) => update("volumeThreshold", event.target.value as PreferenceDraft["volumeThreshold"])}>
+          <option value="">Any</option>
+          <option value="low">Low+</option>
+          <option value="high">High+</option>
+          <option value="very_high">Very high</option>
+        </select>
+      </label>
+      <label className="field">
+        <span>Board</span>
+        <select value={preferences.boardCertified} onChange={(event) => update("boardCertified", event.target.value as PreferenceDraft["boardCertified"])}>
+          <option value="">Any</option>
+          <option value="true">Certified</option>
+          <option value="false">Not certified</option>
+        </select>
+      </label>
+    </div>
   );
 }
 
@@ -413,6 +495,28 @@ function EmptyState({ text }: { text: string }) {
 
 function normalizeMarkdown(value: string): string {
   return value.replace(/\|\s+\|/g, "|\n|");
+}
+
+function toQueryPreferences(preferences: PreferenceDraft): QueryPreferences {
+  return {
+    icd10Codes: splitList(preferences.icd10Codes).map((value) => value.toUpperCase()),
+    states: splitList(preferences.states).map((value) => value.toUpperCase()),
+    regions: splitList(preferences.regions).map((value) => value.toLowerCase()),
+    specialties: splitList(preferences.specialties),
+    volumeThreshold: preferences.volumeThreshold || null,
+    boardCertified: preferences.boardCertified === "" ? null : preferences.boardCertified === "true",
+  };
+}
+
+function splitList(value: string): string[] {
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function hasPreferenceDraft(preferences: PreferenceDraft): boolean {
+  return Object.values(preferences).some((value) => value !== "");
 }
 
 function artifactIcon(type: ArtifactType) {

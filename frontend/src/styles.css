@@ -161,10 +161,33 @@ select:focus {
   text-align: left;
 }
 
+.preference-header {
+  align-items: center;
+  border-top: 1px solid #e0e8f1;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  padding-top: 12px;
+}
+
+.preference-header .compact {
+  height: 36px;
+  padding: 0 11px;
+}
+
+.chevron {
+  transition: transform 0.18s ease;
+}
+
+.chevron.open {
+  transform: rotate(180deg);
+}
+
 .preference-grid {
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 12px;
 }
 
 .field {

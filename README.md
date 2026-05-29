@@ -37,7 +37,7 @@ Current implemented slice:
 - LLM Judge Agent that returns an approve/revise/fail decision and appears in the trace
 - Per-agent LangGraph nodes with a targeted revision edge from `needs_revision` back to the relevant agent once
 - Canonical filtered physician context injected by the backend into PPT, Excel, Report, and Sandbox agents so Mistral does not serialize full physician rows in tool arguments
-- React/Vite frontend with query-only composer, inferred scope display, streaming trace timeline, result rendering, artifact downloads, sandbox output, and physician preview
+- React/Vite frontend with natural-language composer, optional structured preference panel, inferred scope display, streaming trace timeline, result rendering, artifact downloads, sandbox output, and physician preview
 - Source-controlled prompt files for every planned agent
 
 ## Assignment Goal
@@ -555,7 +555,8 @@ npm run build
 Current query behavior:
 
 - Requires `MISTRAL_API_KEY`.
-- Sends the orchestrator prompt, user query, empty optional override fields, and tool schemas to Mistral.
+- Sends the orchestrator prompt, user query, optional structured preference overrides, and tool schemas to Mistral.
+- Applies non-empty UI preferences as explicit backend overrides on the `get_physician_data` tool call.
 - Relies on Mistral tool calling to extract ICD-10 codes, geography, specialty, volume tier, and artifact intent from the query.
 - Uses `/query/stream` from the frontend so trace events render while the workflow is still running.
 - Executes `get_physician_data` through the same backend physician service used by `GET /physicians`.
@@ -575,7 +576,7 @@ Current query behavior:
 5. Implement Mistral client and orchestrator tool definitions - basic client/tool loop done
 6. Add LangGraph state workflow around the orchestrator, context reuse, per-agent nodes, judge node, and targeted revision edge - done
 7. Implement Excel Agent and PPT Agent first - done
-8. Add React UI with query input, inferred scope display, streaming trace, and downloads - done
+8. Add React UI with query input, optional preference panel, inferred scope display, streaming trace, and downloads - done
 9. Implement Report Agent - markdown done, optional DOCX pending
 10. Implement Sandbox Agent with E2B execution, restricted local fallback, and one retry on failure - done
 11. Polish demo queries, tests, docs, and video script
@@ -590,6 +591,7 @@ Current query behavior:
 - Current `/query` implementation can generate PPTX, Excel, markdown reports, sandbox stdout, and chart artifacts. Optional DOCX reports are still pending.
 - Browser visual QA was attempted, but the in-app Browser plugin failed to attach in this Windows sandbox. The frontend production build passes.
 - LangGraph targeted revision is limited to one retry and reruns one target agent at a time; a larger production workflow could support multi-agent revision plans.
+- Independent artifact agents are selected together by Mistral and routed through explicit graph nodes; a production version could execute those branches concurrently with isolated DB sessions and a background job queue.
 - The first implementation will optimize for the required assignment flow before adding memory or user accounts.
 
 ## What I Would Build Next

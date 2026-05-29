@@ -573,3 +573,28 @@ Verification:
 - Confirmed the guard removed the invented specialty, retrieved 30 records, rejected the bad sandbox code, retried, generated one chart artifact, bound `/artifacts/{id}` into Results, and received judge approval.
 - Ran direct PPT, Excel, and Report tool executions with malformed `physician_list` arguments and confirmed all three used the 12 canonical filtered records instead of the bad model-supplied list.
 - Restarted the FastAPI backend on `127.0.0.1:8000` and confirmed `/health` returned `status=ok`.
+
+## 2026-05-30 - Optional Preference Panel And Override Enforcement
+
+What changed:
+
+- Added an optional structured preference panel to the React query UI.
+- The panel supports ICD-10 codes, states, regions, specialties, volume threshold, and board certification.
+- Kept the default experience natural-language-first; the panel starts empty and collapsed.
+- Wired non-empty preferences into the `/query/stream` payload.
+- Added backend enforcement so structured preferences override model omissions or weaker inferred filters on `get_physician_data`.
+- Kept artifact routing in Mistral tool calling; preferences only constrain physician retrieval.
+- Updated README and orchestration docs to describe the preference override behavior.
+
+Why this came next:
+
+- The assignment explicitly asks for a query input plus user preference panel.
+- The earlier query-only UI was cleaner, but it left a visible compliance gap.
+- Backend enforcement prevents the panel from being cosmetic: if the user enters `CA` and `C341`, those constraints are applied even if the model omits them.
+
+Verification:
+
+- Ran frontend production build.
+- Ran Python compilation for the LangGraph workflow.
+- Ran the required PPT+Excel walkthrough with mocked Mistral calls and confirmed 12 physicians, PPTX+XLSX artifacts, and judge approval.
+- Ran a preference override workflow where Mistral supplied no filters and the request preferences supplied `CA`, `C341`, and `high`; confirmed the final inferred filters and physician count came from the structured preferences.
