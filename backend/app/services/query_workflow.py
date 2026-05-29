@@ -136,6 +136,25 @@ def run_query_workflow(
         step_count = state["step_count"] + 1
 
         if not model_message.tool_calls:
+            guard_tool_call = _missing_required_followup_tool(state)
+            if guard_tool_call is not None:
+                state["trace"].retrying(
+                    agent=AgentName.orchestrator,
+                    message=f"Workflow guard added missing {guard_tool_call.name} step.",
+                    metadata={
+                        "reason": "The query asks for analysis/ranking, but Mistral stopped after data retrieval.",
+                        "selectedTools": [guard_tool_call.name],
+                    },
+                )
+                return {
+                    "step_count": step_count,
+                    "pending_tool_calls": [guard_tool_call],
+                    "messages": [
+                        *state["messages"],
+                        runtime.assistant_tool_call_message([guard_tool_call]),
+                    ],
+                }
+
             state["trace"].completed(
                 started_event_id=state["orchestrator_start_id"],
                 agent=AgentName.orchestrator,
@@ -469,6 +488,59 @@ def _execute_current_tool(state: QueryWorkflowState) -> dict[str, object]:
 
 def _order_tool_calls(tool_calls: list[MistralToolCall]) -> list[MistralToolCall]:
     return sorted(tool_calls, key=lambda tool_call: TOOL_EXECUTION_ORDER.get(tool_call.name, 99))
+
+
+def _missing_required_followup_tool(state: QueryWorkflowState) -> MistralToolCall | None:
+    request = state["request"]
+    runtime = state["runtime"]
+    tool_records = state.get("tool_call_records", [])
+
+    if (
+        _query_requires_sandbox(request.query)
+        and runtime.physician_context
+        and runtime.sandbox_output is None
+        and not _tool_was_called("call_sandbox_agent", tool_records)
+    ):
+        return MistralToolCall(
+            id=f"guard_{uuid4().hex[:12]}",
+            name="call_sandbox_agent",
+            arguments={
+                "code_goal": request.query,
+                "dataset": runtime.physician_context,
+                "chart_type": "bar" if _query_likely_wants_chart(request.query) else None,
+            },
+        )
+
+    return None
+
+
+def _query_requires_sandbox(query: str) -> bool:
+    normalized = query.lower()
+    analysis_terms = [
+        "analysis",
+        "analyze",
+        "show me which",
+        "which states",
+        "highest",
+        "lowest",
+        "rank",
+        "ranking",
+        "concentration",
+        "distribution",
+        "compare",
+        "chart",
+        "plot",
+    ]
+    return any(term in normalized for term in analysis_terms)
+
+
+def _query_likely_wants_chart(query: str) -> bool:
+    normalized = query.lower()
+    return any(term in normalized for term in ["chart", "plot", "distribution", "concentration", "compare"])
+
+
+def _tool_was_called(tool_name: str, tool_call_records: list[dict[str, object]]) -> bool:
+    return any(record.get("name") == tool_name for record in tool_call_records)
 
 
 def _tool_selection_metadata(tool_calls: list[MistralToolCall], step_count: int) -> dict[str, object]:

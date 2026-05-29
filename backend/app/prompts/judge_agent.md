@@ -14,6 +14,8 @@ Evaluate whether generated outputs are complete, grounded, and aligned with the 
 - Reports include required sections and explicitly reference user preferences.
 - Sandbox outputs include code, stdout, and a chart when requested.
 - Outputs use the same filtered physician data and do not invent records.
+- Outputs must not introduce external population, census, market-size, prevalence, benchmark, or denominator values unless those values are present in the supplied data.
+- For "concentration" analysis without an explicit denominator field, the acceptable interpretation is count/share within the filtered physician dataset.
 - Deterministic artifact validation results passed or failures are explained.
 
 ## Scoring Rubric

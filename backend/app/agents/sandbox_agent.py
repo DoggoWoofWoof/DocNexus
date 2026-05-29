@@ -19,10 +19,22 @@ from backend.app.services.prompts import load_prompt
 
 TextGenerator = Callable[[list[dict[str, object]]], str]
 
-BANNED_NODES = (ast.Import, ast.ImportFrom)
-BANNED_CALLS = {"eval", "exec", "compile", "__import__", "open", "input", "breakpoint"}
+SAFE_IMPORTS = {"collections", "json", "math", "matplotlib", "matplotlib.pyplot", "pandas", "statistics"}
+BANNED_CALLS = {"eval", "exec", "compile", "open", "input", "breakpoint"}
 BANNED_NAMES = {"os", "sys", "subprocess", "socket", "shutil", "pathlib", "requests", "urllib"}
+EXTERNAL_DENOMINATOR_PATTERNS = (
+    "population =",
+    "population_by_state",
+    "state_population",
+    "state_populations",
+    "populations =",
+    "population (",
+    "per 10m",
+    "per 100k",
+    "millions",
+)
 RUNNER = r"""
+import importlib
 import json
 import math
 import statistics
@@ -37,7 +49,19 @@ import pandas as pd
 dataset = json.loads(Path("dataset.json").read_text(encoding="utf-8"))
 code = Path("analysis_code.py").read_text(encoding="utf-8")
 
+SAFE_IMPORTS = {"collections", "json", "math", "matplotlib", "matplotlib.pyplot", "pandas", "statistics"}
+
+
+def safe_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level != 0:
+        raise ImportError("Relative imports are not allowed in the sandbox.")
+    if name not in SAFE_IMPORTS and name.split(".")[0] not in SAFE_IMPORTS:
+        raise ImportError(f"Import is not allowed in the sandbox: {name}")
+    return __import__(name, globals, locals, fromlist, level)
+
+
 safe_builtins = {
+    "__import__": safe_import,
     "abs": abs,
     "all": all,
     "any": any,
@@ -183,7 +207,9 @@ def _generate_code(
                     "instructions": [
                         "Return only Python code.",
                         "Do not include markdown fences.",
-                        "Do not import modules; pd, plt, dataset, and helpers are already available.",
+                        "Use only the provided dataset; do not add external population, census, benchmark, or market-size values.",
+                        "For concentration questions, compute count and share within the supplied dataset unless a denominator exists in the dataset.",
+                        "Do not import unsafe modules; pd, plt, dataset, and helpers are already available.",
                         "Use dataset as the input list of records.",
                         "Save any chart to chart.png.",
                     ],
@@ -355,10 +381,21 @@ def _read_e2b_chart(*, sandbox, settings: Settings) -> Path | None:
 
 
 def _validate_code(code: str) -> None:
+    lowered_code = code.lower()
+    if any(pattern in lowered_code for pattern in EXTERNAL_DENOMINATOR_PATTERNS):
+        raise ValueError(
+            "Sandbox analysis may not introduce external population denominators. "
+            "Use only counts and shares from the supplied physician dataset."
+        )
+
     tree = ast.parse(code)
     for node in ast.walk(tree):
-        if isinstance(node, BANNED_NODES):
-            raise ValueError("Sandbox code may not import modules. Use the provided pd, plt, and dataset variables.")
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                _validate_import(alias.name)
+
+        if isinstance(node, ast.ImportFrom):
+            _validate_import(node.module or "")
 
         if isinstance(node, ast.Name) and node.id in BANNED_NAMES:
             raise ValueError(f"Sandbox code may not access `{node.id}`.")
@@ -367,6 +404,16 @@ def _validate_code(code: str) -> None:
             function = node.func
             if isinstance(function, ast.Name) and function.id in BANNED_CALLS:
                 raise ValueError(f"Sandbox code may not call `{function.id}`.")
+
+
+def _validate_import(module_name: str) -> None:
+    if not module_name:
+        raise ValueError("Relative imports are not allowed in sandbox code.")
+    if module_name not in SAFE_IMPORTS and module_name.split(".")[0] not in SAFE_IMPORTS:
+        raise ValueError(
+            f"Sandbox code may not import `{module_name}`. "
+            f"Allowed imports: {', '.join(sorted(SAFE_IMPORTS))}."
+        )
 
 
 def _strip_code_fences(text: str) -> str:

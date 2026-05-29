@@ -520,3 +520,27 @@ Verification:
 - Ran backend compilation across `backend/app`.
 - Ran the frontend production build.
 - Ran a streamed Mistral smoke test with empty preferences and confirmed the trace included `Medical Oncology`, `CA/NY`, `C341/C342`, and `high`.
+
+## 2026-05-29 - Analysis Routing Guard And Grounding Fix
+
+What changed:
+
+- Added a LangGraph workflow guard for analysis/ranking/concentration queries.
+- If Mistral stops after data retrieval for an analysis request, the graph now adds the missing `call_sandbox_agent` step before judging.
+- Strengthened the Sandbox Agent prompt to keep concentration analysis grounded in the supplied physician dataset.
+- Allowed safe analysis imports such as pandas/matplotlib while still blocking unsafe imports and calls.
+- Added validation against hardcoded external population denominators such as state population maps or per-capita claims.
+- Updated the Judge Agent prompt to reject external denominators unless they are present in the supplied data.
+
+Why this came next:
+
+- A query asking to "run an analysis" should not end after data retrieval.
+- The trace previously showed the judge asking for sandbox work only after the workflow had already reached the retry limit.
+- A generated analysis briefly used external state population denominators, which weakened grounding and needed a deterministic guard.
+
+Verification:
+
+- Ran backend compilation for the changed workflow and sandbox modules.
+- Ran the frontend production build.
+- Ran the exact streamed query: "Run an analysis and show me which states have the highest concentration of high-volume NSCLC prescribers."
+- Confirmed the workflow now goes data -> sandbox -> judge, uses E2B, has no failed trace events, avoids external population denominators, and receives judge approval.

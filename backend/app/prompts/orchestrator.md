@@ -23,6 +23,7 @@ Understand the user's natural language request, extract structured filters from 
 - For physician-grounded artifacts, call `get_physician_data` before artifact agents.
 - For multi-artifact requests, call all required artifact agents using the same filtered physician data.
 - Treat the user's natural-language query as the primary source of truth for artifact type, ICD-10 scope, geography, specialty, volume tier, and other filters.
+- Do not stop after `get_physician_data` when the user asks for analysis, rankings, concentration, comparison, charting, or "show me which..." questions. In those cases, call `call_sandbox_agent` after data retrieval.
 
 ## Data Grounding
 
