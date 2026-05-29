@@ -448,3 +448,28 @@ Verification:
 - Confirmed LangGraph converted that into a targeted Excel revision.
 - Confirmed the second judge response with `overall=92` approved the final result.
 - Confirmed trace messages include both judge scores.
+
+## 2026-05-29 - LLM Plans For PPT And Excel Agents
+
+What changed:
+
+- Added focused LLM planning calls inside the PPT Agent and Excel Agent.
+- Updated `ppt_agent.md` to require structured JSON with title, subtitle, insight bullets, and table rationale.
+- Updated `excel_agent.md` to require structured JSON with workbook title, summary, sheet plan, and analysis notes.
+- Kept `python-pptx` and `openpyxl` as deterministic renderers for real file generation.
+- Stored each agent's LLM plan in artifact provenance under `llmPlan`.
+- Passed PPT and Excel planning calls through the existing Mistral text-generation wrapper.
+
+Why this came next:
+
+- The assignment says each specialized agent should be a focused LLM call or code-execution step with its own system prompt.
+- This removes ambiguity around PPT and Excel agents being purely deterministic services.
+- The judge can now inspect both the rendered file validation and the LLM content plan that drove the artifact.
+
+Verification:
+
+- Ran Python compilation across the backend.
+- Ran a fake workflow that generated both PPTX and XLSX artifacts.
+- Confirmed both returned artifacts included `provenance.llmPlan`.
+- Confirmed deterministic validators passed for both generated files.
+- Confirmed the judge received the planned artifacts and returned a scored approval.

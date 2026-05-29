@@ -341,6 +341,7 @@ class OrchestratorService:
         artifact_ref = generate_excel_workbook(
             session=self.session,
             settings=self.settings,
+            generate_text=lambda messages: self.mistral.complete_text(messages=messages),
             analysis_type=excel_args.analysis_type,
             physicians=excel_args.physician_list,
             dimensions=excel_args.dimensions,
@@ -510,6 +511,7 @@ class OrchestratorService:
         artifact_ref = generate_ppt_deck(
             session=self.session,
             settings=self.settings,
+            generate_text=lambda messages: self.mistral.complete_text(messages=messages),
             topic=ppt_args.topic,
             physicians=ppt_args.physician_list,
             icd10_codes=ppt_args.icd10_codes,

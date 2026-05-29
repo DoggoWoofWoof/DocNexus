@@ -152,9 +152,16 @@ Every generated artifact stores provenance metadata in SQLite and returns it in 
 - `promptName` and `promptSha256`: the source-controlled prompt associated with the agent.
 - `inputSha256`: a stable hash of the structured agent input.
 - `artifactSha256` and `fileSizeBytes`: a hash and byte count of the generated file on disk.
-- `provenance`: lightweight extra metadata such as model name, tool name, source agent, and input record count.
+- `provenance`: lightweight extra metadata such as model name, tool name, source agent, input record count, and any LLM-generated artifact plan.
 
 This makes artifact traceability explicit. Reviewers can see not just that a file exists, but which prompt, payload, tool call, and model path produced it.
+
+For PPT and Excel outputs, specialized agents now run a focused LLM planning call before file rendering:
+
+- PPT Agent returns structured JSON with title, subtitle, insight bullets, and table rationale.
+- Excel Agent returns structured JSON with workbook title, summary, sheet plan, and analysis notes.
+
+The Python renderers still create the real `.pptx` and `.xlsx` files deterministically. This keeps binary file generation reliable while satisfying the requirement that specialized agents use their own prompts and LLM calls.
 
 ## Deterministic Artifact Validation
 

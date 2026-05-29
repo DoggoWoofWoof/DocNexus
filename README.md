@@ -29,8 +29,8 @@ Current implemented slice:
 - `POST /query` LangGraph workflow with Mistral tool calling, per-agent nodes, context reuse, judge evaluation, and targeted revision
 - `POST /query/stream` NDJSON endpoint for live trace events plus the final response
 - Artifact registry and `GET /artifacts/{id}` downloads
-- PPT Agent that generates real `.pptx` decks with title, overview, insights, and top-physicians slides
-- Excel Agent that generates real `.xlsx` workbooks with raw data, state x specialty summary, and ICD-10 breakdown sheets
+- LLM-backed PPT Agent that plans slide content, then renders real `.pptx` decks with title, overview, insights, and top-physicians slides
+- LLM-backed Excel Agent that plans workbook purpose/analysis notes, then renders real `.xlsx` workbooks with raw data, state x specialty summary, and ICD-10 breakdown sheets
 - LLM-backed Report Agent that returns markdown in the UI response and stores a downloadable `.md` artifact
 - LLM-backed Sandbox Agent with restricted local Python `exec()` subprocess execution, stdout capture, retry, and chart artifact registration
 - LLM Judge Agent that returns an approve/revise/fail decision and appears in the trace
@@ -204,12 +204,16 @@ PPT Agent:
 
 - Input: topic, physician list, ICD-10 scope, slide count, style notes
 - Output: downloadable `.pptx`
+- LLM role: generate the deck title, subtitle, insight bullets, and table rationale as structured JSON
+- Renderer role: use `python-pptx` to create the actual PowerPoint file deterministically
 - Minimum slides: title, population overview, key insights, top 10 physicians table
 
 Excel Agent:
 
 - Input: analysis type, physician list, dimensions, ICD-10 scope
 - Output: downloadable `.xlsx`
+- LLM role: generate workbook title, summary, sheet plan, and analysis notes as structured JSON
+- Renderer role: use `openpyxl` to create the actual workbook deterministically
 - Sheets: raw data, state x specialty summary, ICD-10 breakdown
 
 Report Agent:
@@ -363,7 +367,7 @@ Generated artifacts will be created server-side and stored under a local artifac
 
 The browser will never generate PPTX or XLSX files. This keeps the implementation aligned with the assignment requirement and makes artifact generation testable from the backend.
 
-The provenance hashes are intentionally stored with each artifact so the demo can answer: "Which prompt, model, tool call, and input payload produced this file?" This gives the judge and trace system a stronger audit trail than only storing filenames.
+The provenance hashes are intentionally stored with each artifact so the demo can answer: "Which prompt, model, tool call, and input payload produced this file?" This gives the judge and trace system a stronger audit trail than only storing filenames. PPT and Excel artifacts also store each agent's LLM-generated plan in provenance, so the judge can inspect the content plan that was rendered into the final file.
 
 Before the LLM judge runs, the backend performs deterministic artifact validation:
 
