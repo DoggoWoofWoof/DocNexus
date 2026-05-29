@@ -51,29 +51,36 @@ The system should understand the requested artifact, retrieve relevant mock phys
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    User["User Query + Preferences"] --> UI["React UI"]
-    UI --> API["FastAPI Backend"]
-    API --> Graph["LangGraph Workflow State"]
-    Graph --> Router["Mistral Orchestrator<br/>Native Tool Calling"]
-    Router --> DataTool["get_physician_data"]
-    DataTool --> DB["SQLite Physician Dataset"]
-    Router --> PPT["PPT Agent"]
-    Router --> Excel["Excel Agent"]
-    Router --> Report["Report Agent"]
-    Router --> Sandbox["Sandbox Agent"]
-    Graph --> Judge["Judge Agent"]
-    Judge --> Graph
-    Sandbox --> E2B["E2B Sandbox<br/>or Restricted Local Fallback"]
-    PPT --> Artifacts["Artifact Store"]
-    Excel --> Artifacts
-    Report --> Artifacts
-    E2B --> Artifacts
-    Artifacts --> API
-    Graph --> Trace["Agent Trace Events"]
-    Trace --> UI
-    API --> UI
+```text
+User query + preferences
+        |
+        v
+React UI
+        |
+        v
+FastAPI backend
+        |
+        v
+LangGraph workflow state
+        |
+        +--> Mistral orchestrator with native tool calling
+        |       |
+        |       +--> get_physician_data --> SQLite physician dataset
+        |       +--> PPT Agent -----------+
+        |       +--> Excel Agent ---------+
+        |       +--> Report Agent --------+--> Artifact store --> GET /artifacts/{id}
+        |       +--> Sandbox Agent -------+
+        |                                  |
+        |                                  +--> Restricted local Python subprocess
+        |
+        +--> Deterministic artifact validation
+        |
+        +--> LLM Judge scorecard
+                |
+                +--> approved --> final response
+                +--> needs_revision --> targeted agent node
+
+TraceBuilder streams live events through POST /query/stream back to the React UI.
 ```
 
 The key design choice is separating model judgment from workflow execution:
