@@ -1,0 +1,534 @@
+import json
+from uuid import uuid4
+
+from sqlmodel import Session
+
+from backend.app.agents.judge_agent import judge_outputs
+from backend.app.agents.ppt_agent import generate_ppt_deck
+from backend.app.agents.report_agent import generate_report
+from backend.app.agents.sandbox_agent import generate_and_run_sandbox_code
+from backend.app.agents.tool_definitions import get_orchestrator_tools
+from backend.app.agents.excel_agent import generate_excel_workbook
+from backend.app.clients.mistral import MistralToolCall, MistralToolClient
+from backend.app.core.config import Settings
+from backend.app.schemas.artifact import ArtifactRef
+from backend.app.schemas.query import JudgeDecision, QueryRequest, QueryResponse
+from backend.app.schemas.trace import AgentName
+from backend.app.schemas.tools import ExcelAgentArgs, PptAgentArgs, ReportAgentArgs, SandboxAgentArgs
+from backend.app.services.physicians import list_physicians
+from backend.app.services.prompts import load_prompt
+from backend.app.services.trace import TraceBuilder
+
+
+AGENT_TOOL_NAMES = {
+    "call_ppt_agent": AgentName.ppt,
+    "call_excel_agent": AgentName.excel,
+    "call_report_agent": AgentName.report,
+    "call_sandbox_agent": AgentName.sandbox,
+}
+
+SOURCE_AGENT_BY_TOOL_NAME = {
+    "call_ppt_agent": "ppt",
+    "call_excel_agent": "excel",
+    "call_report_agent": "report",
+    "call_sandbox_agent": "sandbox",
+}
+
+
+class OrchestratorService:
+    def __init__(self, *, settings: Settings, session: Session):
+        self.settings = settings
+        self.session = session
+        self.mistral = MistralToolClient(settings)
+        self.reset_context()
+
+    def reset_context(self) -> None:
+        self._physician_context: list[dict[str, object]] = []
+        self._artifact_refs: list[ArtifactRef] = []
+        self._report_markdown: str | None = None
+        self._sandbox_output = None
+        self._judge_decision = None
+
+    @property
+    def artifact_refs(self) -> list[ArtifactRef]:
+        return self._artifact_refs
+
+    @property
+    def physician_context(self) -> list[dict[str, object]]:
+        return self._physician_context
+
+    @property
+    def report_markdown(self) -> str | None:
+        return self._report_markdown
+
+    @property
+    def sandbox_output(self):
+        return self._sandbox_output
+
+    @property
+    def judge_decision(self):
+        return self._judge_decision
+
+    def set_judge_decision(self, decision: JudgeDecision) -> None:
+        self._judge_decision = decision
+
+    def prepare_for_revision(self, tool_name: str) -> None:
+        source_agent = SOURCE_AGENT_BY_TOOL_NAME.get(tool_name)
+        if source_agent:
+            self._artifact_refs = [ref for ref in self._artifact_refs if ref.source_agent != source_agent]
+
+        if tool_name == "call_report_agent":
+            self._report_markdown = None
+        if tool_name == "call_sandbox_agent":
+            self._sandbox_output = None
+
+    def run(self, request: QueryRequest) -> QueryResponse:
+        request_id = f"req_{uuid4().hex[:12]}"
+        trace = TraceBuilder()
+        prompt = load_prompt("orchestrator.md")
+        tools = get_orchestrator_tools()
+        tool_call_records: list[dict[str, object]] = []
+        answer_markdown: str | None = None
+        self.reset_context()
+
+        start_id = trace.started(
+            agent=AgentName.orchestrator,
+            message="Parsing query and selecting tools.",
+            metadata={"model": self.settings.mistral_model},
+        )
+
+        messages = [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": self._build_user_message(request),
+            },
+        ]
+
+        for step in range(3):
+            model_message = self.mistral.complete_with_tools(
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                parallel_tool_calls=True,
+            )
+
+            if not model_message.tool_calls:
+                answer_markdown = model_message.content
+                trace.completed(
+                    started_event_id=start_id,
+                    agent=AgentName.orchestrator,
+                    message="Orchestrator produced a final response.",
+                    metadata={"steps": step + 1},
+                )
+                break
+
+            messages.append(self._assistant_tool_call_message(model_message.tool_calls))
+
+            for tool_call in model_message.tool_calls:
+                tool_call_records.append(
+                    {
+                        "id": tool_call.id,
+                        "name": tool_call.name,
+                        "arguments": tool_call.arguments,
+                    }
+                )
+                tool_result = self._execute_tool(tool_call, trace)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "name": tool_call.name,
+                        "content": json.dumps(tool_result),
+                    }
+                )
+        else:
+            trace.completed(
+                started_event_id=start_id,
+                agent=AgentName.orchestrator,
+                message="Stopped after the maximum orchestration planning steps.",
+                metadata={"maxSteps": 3},
+            )
+
+        fallback_answer = (
+            f"Generated {len(self._artifact_refs)} artifact(s)."
+            if self._artifact_refs
+            else "Orchestration completed without file artifacts."
+        )
+        final_answer = self._report_markdown or answer_markdown or fallback_answer
+        self.run_judge(
+            trace=trace,
+            query=request.query,
+            artifacts=self._artifact_refs,
+            answer_markdown=final_answer,
+            sandbox_output=self._sandbox_output,
+            tool_calls=tool_call_records,
+        )
+
+        return QueryResponse(
+            request_id=request_id,
+            query=request.query,
+            answer_markdown=final_answer,
+            artifacts=self._artifact_refs,
+            sandbox_output=self._sandbox_output,
+            trace=trace.events if request.include_trace else [],
+            judge_decision=self._judge_decision,
+            metadata={
+                "toolCalls": tool_call_records,
+                "implementedTools": [
+                    "get_physician_data",
+                    "call_excel_agent",
+                    "call_ppt_agent",
+                    "call_report_agent",
+                    "call_sandbox_agent",
+                ],
+                "pendingTools": [],
+            },
+        )
+
+    def execute_tool(self, tool_call: MistralToolCall, trace: TraceBuilder) -> dict[str, object]:
+        return self._execute_tool(tool_call, trace)
+
+    def run_judge(
+        self,
+        *,
+        trace: TraceBuilder,
+        query: str,
+        artifacts: list[ArtifactRef],
+        answer_markdown: str | None,
+        sandbox_output,
+        tool_calls: list[dict[str, object]],
+    ) -> None:
+        self._run_judge(
+            trace=trace,
+            query=query,
+            artifacts=artifacts,
+            answer_markdown=answer_markdown,
+            sandbox_output=sandbox_output,
+            tool_calls=tool_calls,
+        )
+
+    def build_user_message(self, request: QueryRequest) -> str:
+        return self._build_user_message(request)
+
+    @staticmethod
+    def assistant_tool_call_message(tool_calls: list[MistralToolCall]) -> dict[str, object]:
+        return OrchestratorService._assistant_tool_call_message(tool_calls)
+
+    def _execute_tool(self, tool_call: MistralToolCall, trace: TraceBuilder) -> dict[str, object]:
+        if tool_call.name == "get_physician_data":
+            return self._execute_get_physician_data(tool_call, trace)
+
+        if tool_call.name == "call_excel_agent":
+            return self._execute_excel_agent(tool_call, trace)
+
+        if tool_call.name == "call_ppt_agent":
+            return self._execute_ppt_agent(tool_call, trace)
+
+        if tool_call.name == "call_report_agent":
+            return self._execute_report_agent(tool_call, trace)
+
+        if tool_call.name == "call_sandbox_agent":
+            return self._execute_sandbox_agent(tool_call, trace)
+
+        agent = AGENT_TOOL_NAMES.get(tool_call.name, AgentName.orchestrator)
+        trace.skipped(
+            agent=agent,
+            message=f"{tool_call.name} was selected but the agent is not implemented yet.",
+            metadata={"toolCallId": tool_call.id},
+        )
+        return {
+            "status": "not_implemented",
+            "message": f"{tool_call.name} is planned but not implemented yet.",
+        }
+
+    def _execute_get_physician_data(self, tool_call: MistralToolCall, trace: TraceBuilder) -> dict[str, object]:
+        start_id = trace.started(
+            agent=AgentName.data,
+            message="Retrieving filtered physician data.",
+            metadata={"toolCallId": tool_call.id, "arguments": tool_call.arguments},
+        )
+        args = tool_call.arguments
+        physicians, filters = list_physicians(
+            self.session,
+            specialty=args.get("specialty") or [],
+            state=args.get("state") or [],
+            region=args.get("region") or [],
+            icd10_codes=args.get("icd10_codes") or [],
+            volume_threshold=args.get("volume_threshold"),
+            board_certified=args.get("board_certified"),
+        )
+        trace.completed(
+            started_event_id=start_id,
+            agent=AgentName.data,
+            message=f"Retrieved {len(physicians)} physician records.",
+            metadata={"count": len(physicians), "filters": filters.model_dump(by_alias=True)},
+        )
+        self._physician_context = [physician.model_dump(by_alias=True) for physician in physicians]
+        return {
+            "status": "completed",
+            "count": len(physicians),
+            "filtersApplied": filters.model_dump(by_alias=True),
+            "physicians": self._physician_context,
+        }
+
+    def _execute_excel_agent(self, tool_call: MistralToolCall, trace: TraceBuilder) -> dict[str, object]:
+        start_id = trace.started(
+            agent=AgentName.excel,
+            message="Generating Excel workbook.",
+            metadata={"toolCallId": tool_call.id},
+        )
+
+        args = {
+            "analysis_type": "physician_breakdown",
+            "dimensions": ["state", "specialty", "icd10_code"],
+            "icd10_codes": [],
+            "revision_instructions": None,
+            **tool_call.arguments,
+        }
+        if not args.get("physician_list"):
+            args["physician_list"] = self._physician_context
+
+        excel_args = ExcelAgentArgs.model_validate(args)
+        artifact_ref = generate_excel_workbook(
+            session=self.session,
+            settings=self.settings,
+            analysis_type=excel_args.analysis_type,
+            physicians=excel_args.physician_list,
+            dimensions=excel_args.dimensions,
+            icd10_codes=excel_args.icd10_codes,
+        )
+        self._artifact_refs.append(artifact_ref)
+
+        trace.completed(
+            started_event_id=start_id,
+            agent=AgentName.excel,
+            message=f"Generated Excel workbook: {artifact_ref.filename}.",
+            metadata={
+                "artifactId": artifact_ref.id,
+                "physicianCount": len(excel_args.physician_list),
+                "revision": bool(excel_args.revision_instructions),
+            },
+        )
+        return {
+            "status": "completed",
+            "artifact": artifact_ref.model_dump(by_alias=True),
+        }
+
+    def _execute_report_agent(self, tool_call: MistralToolCall, trace: TraceBuilder) -> dict[str, object]:
+        start_id = trace.started(
+            agent=AgentName.report,
+            message="Generating markdown report.",
+            metadata={"toolCallId": tool_call.id},
+        )
+
+        args = {
+            "report_type": "Physician Landscape Report",
+            "sections": [
+                "Executive Summary",
+                "Physician Landscape Overview",
+                "Geographic & Specialty Distribution",
+                "Key Insights & Implications",
+                "Recommended Next Steps",
+            ],
+            "physician_list": self._physician_context,
+            "icd10_context": [],
+            "geographic_scope": [],
+            "revision_instructions": None,
+            **tool_call.arguments,
+        }
+        if not args.get("physician_list"):
+            args["physician_list"] = self._physician_context
+
+        report_args = ReportAgentArgs.model_validate(args)
+        markdown, artifact_ref = generate_report(
+            session=self.session,
+            settings=self.settings,
+            generate_text=lambda messages: self.mistral.complete_text(messages=messages),
+            report_type=report_args.report_type,
+            sections=report_args.sections,
+            physicians=report_args.physician_list,
+            icd10_context=report_args.icd10_context,
+            geographic_scope=report_args.geographic_scope,
+            revision_instructions=report_args.revision_instructions,
+        )
+        self._report_markdown = markdown
+        self._artifact_refs.append(artifact_ref)
+
+        trace.completed(
+            started_event_id=start_id,
+            agent=AgentName.report,
+            message=f"Generated markdown report: {artifact_ref.filename}.",
+            metadata={
+                "artifactId": artifact_ref.id,
+                "physicianCount": len(report_args.physician_list),
+                "revision": bool(report_args.revision_instructions),
+            },
+        )
+        return {
+            "status": "completed",
+            "artifact": artifact_ref.model_dump(by_alias=True),
+            "markdown": markdown,
+        }
+
+    def _execute_sandbox_agent(self, tool_call: MistralToolCall, trace: TraceBuilder) -> dict[str, object]:
+        start_id = trace.started(
+            agent=AgentName.sandbox,
+            message="Generating and executing sandbox analysis code.",
+            metadata={"toolCallId": tool_call.id},
+        )
+
+        args = {
+            "code_goal": "Analyze the filtered physician dataset.",
+            "dataset": self._physician_context,
+            "chart_type": None,
+            "revision_instructions": None,
+            **tool_call.arguments,
+        }
+        if not args.get("dataset"):
+            args["dataset"] = self._physician_context
+
+        sandbox_args = SandboxAgentArgs.model_validate(args)
+        output = generate_and_run_sandbox_code(
+            session=self.session,
+            settings=self.settings,
+            generate_text=lambda messages: self.mistral.complete_text(messages=messages),
+            code_goal=sandbox_args.code_goal,
+            dataset=sandbox_args.dataset,
+            chart_type=sandbox_args.chart_type,
+            revision_instructions=sandbox_args.revision_instructions,
+        )
+        self._sandbox_output = output
+
+        if output.chart_artifact_id:
+            from backend.app.services.artifacts import get_artifact, to_artifact_ref
+
+            self._artifact_refs.append(to_artifact_ref(get_artifact(self.session, output.chart_artifact_id)))
+
+        if output.execution_status == "completed":
+            trace.completed(
+                started_event_id=start_id,
+                agent=AgentName.sandbox,
+                message="Sandbox analysis completed.",
+                metadata={"chartArtifactId": output.chart_artifact_id},
+            )
+        else:
+            trace.failed(
+                started_event_id=start_id,
+                agent=AgentName.sandbox,
+                message="Sandbox analysis failed after retry.",
+                metadata={"stderr": output.stderr[-1000:]},
+            )
+
+        return {
+            "status": output.execution_status,
+            "sandboxOutput": output.model_dump(by_alias=True),
+        }
+
+    def _execute_ppt_agent(self, tool_call: MistralToolCall, trace: TraceBuilder) -> dict[str, object]:
+        start_id = trace.started(
+            agent=AgentName.ppt,
+            message="Generating PowerPoint deck.",
+            metadata={"toolCallId": tool_call.id},
+        )
+
+        args = {
+            "topic": "Physician Landscape Summary",
+            "physician_list": self._physician_context,
+            "icd10_codes": [],
+            "slide_count": 4,
+            "revision_instructions": None,
+            **tool_call.arguments,
+        }
+        if not args.get("physician_list"):
+            args["physician_list"] = self._physician_context
+
+        ppt_args = PptAgentArgs.model_validate(args)
+        artifact_ref = generate_ppt_deck(
+            session=self.session,
+            settings=self.settings,
+            topic=ppt_args.topic,
+            physicians=ppt_args.physician_list,
+            icd10_codes=ppt_args.icd10_codes,
+            slide_count=ppt_args.slide_count,
+            style_notes=_append_revision_note(ppt_args.style_notes, ppt_args.revision_instructions),
+        )
+        self._artifact_refs.append(artifact_ref)
+
+        trace.completed(
+            started_event_id=start_id,
+            agent=AgentName.ppt,
+            message=f"Generated PowerPoint deck: {artifact_ref.filename}.",
+            metadata={
+                "artifactId": artifact_ref.id,
+                "physicianCount": len(ppt_args.physician_list),
+                "revision": bool(ppt_args.revision_instructions),
+            },
+        )
+        return {
+            "status": "completed",
+            "artifact": artifact_ref.model_dump(by_alias=True),
+        }
+
+    def _run_judge(
+        self,
+        *,
+        trace: TraceBuilder,
+        query: str,
+        artifacts: list[ArtifactRef],
+        answer_markdown: str | None,
+        sandbox_output,
+        tool_calls: list[dict[str, object]],
+    ) -> None:
+        start_id = trace.started(
+            agent=AgentName.judge,
+            message="Evaluating generated outputs.",
+        )
+        self._judge_decision = judge_outputs(
+            generate_text=lambda messages: self.mistral.complete_text(messages=messages),
+            query=query,
+            artifacts=artifacts,
+            answer_markdown=answer_markdown,
+            sandbox_output=sandbox_output,
+            tool_calls=tool_calls,
+        )
+        trace.completed(
+            started_event_id=start_id,
+            agent=AgentName.judge,
+            message=f"Judge decision: {self._judge_decision.status.value}.",
+            metadata={"reason": self._judge_decision.reason},
+        )
+
+    def _build_user_message(self, request: QueryRequest) -> str:
+        payload = {
+            "query": request.query,
+            "preferences": request.preferences.model_dump(by_alias=True),
+            "requestedArtifacts": [artifact.value for artifact in request.requested_artifacts],
+        }
+        return json.dumps(payload)
+
+    @staticmethod
+    def _assistant_tool_call_message(tool_calls: list[MistralToolCall]) -> dict[str, object]:
+        return {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.name,
+                        "arguments": json.dumps(tool_call.arguments),
+                    },
+                }
+                for tool_call in tool_calls
+            ],
+        }
+
+
+def _append_revision_note(existing: str | None, revision_instructions: str | None) -> str | None:
+    if not revision_instructions:
+        return existing
+    if not existing:
+        return f"Revision instructions: {revision_instructions}"
+    return f"{existing}\nRevision instructions: {revision_instructions}"
