@@ -9,10 +9,10 @@ from backend.app.agents.report_agent import generate_report
 from backend.app.agents.sandbox_agent import generate_and_run_sandbox_code
 from backend.app.agents.tool_definitions import get_orchestrator_tools
 from backend.app.agents.excel_agent import generate_excel_workbook
-from backend.app.clients.mistral import MistralToolCall, MistralToolClient
+from backend.app.clients.mistral import MistralClientError, MistralToolCall, MistralToolClient
 from backend.app.core.config import Settings
 from backend.app.schemas.artifact import ArtifactRef, ArtifactValidationResult
-from backend.app.schemas.query import JudgeDecision, QueryRequest, QueryResponse
+from backend.app.schemas.query import JudgeDecision, JudgeScores, JudgeStatus, QueryRequest, QueryResponse
 from backend.app.schemas.trace import AgentName
 from backend.app.schemas.tools import ExcelAgentArgs, PptAgentArgs, ReportAgentArgs, SandboxAgentArgs
 from backend.app.services.physicians import list_physicians
@@ -334,7 +334,7 @@ class OrchestratorService:
             "revision_instructions": None,
             **tool_call.arguments,
         }
-        if not args.get("physician_list"):
+        if self._physician_context:
             args["physician_list"] = self._physician_context
 
         excel_args = ExcelAgentArgs.model_validate(args)
@@ -392,7 +392,7 @@ class OrchestratorService:
             "revision_instructions": None,
             **tool_call.arguments,
         }
-        if not args.get("physician_list"):
+        if self._physician_context:
             args["physician_list"] = self._physician_context
 
         report_args = ReportAgentArgs.model_validate(args)
@@ -445,8 +445,10 @@ class OrchestratorService:
             "revision_instructions": None,
             **tool_call.arguments,
         }
-        if not args.get("dataset"):
+        if self._physician_context:
             args["dataset"] = self._physician_context
+        if not args.get("chart_type") and _goal_likely_wants_chart(str(args.get("code_goal") or "")):
+            args["chart_type"] = "bar"
 
         sandbox_args = SandboxAgentArgs.model_validate(args)
         output = generate_and_run_sandbox_code(
@@ -478,6 +480,9 @@ class OrchestratorService:
                 metadata={
                     "chartArtifactId": output.chart_artifact_id,
                     "executionProvider": output.execution_provider,
+                    "attemptCount": output.attempt_count,
+                    "contractStatus": output.contract_status,
+                    "contractMessages": output.contract_messages,
                 },
             )
         else:
@@ -488,6 +493,9 @@ class OrchestratorService:
                 metadata={
                     "stderr": output.stderr[-1000:],
                     "executionProvider": output.execution_provider,
+                    "attemptCount": output.attempt_count,
+                    "contractStatus": output.contract_status,
+                    "contractMessages": output.contract_messages,
                 },
             )
 
@@ -511,7 +519,7 @@ class OrchestratorService:
             "revision_instructions": None,
             **tool_call.arguments,
         }
-        if not args.get("physician_list"):
+        if self._physician_context:
             args["physician_list"] = self._physician_context
 
         ppt_args = PptAgentArgs.model_validate(args)
@@ -563,20 +571,32 @@ class OrchestratorService:
             agent=AgentName.judge,
             message="Evaluating generated outputs.",
         )
-        self._judge_decision = judge_outputs(
-            generate_text=lambda messages: self.mistral.complete_text(messages=messages),
-            query=query,
-            artifacts=artifacts,
-            artifact_validations=artifact_validations,
-            answer_markdown=answer_markdown,
-            sandbox_output=sandbox_output,
-            tool_calls=tool_calls,
-        )
+        judge_provider = "mistral"
+        try:
+            self._judge_decision = judge_outputs(
+                generate_text=lambda messages: self.mistral.complete_text(messages=messages),
+                query=query,
+                artifacts=artifacts,
+                artifact_validations=artifact_validations,
+                answer_markdown=answer_markdown,
+                sandbox_output=sandbox_output,
+                tool_calls=tool_calls,
+            )
+        except MistralClientError as exc:
+            judge_provider = "deterministic_resilience"
+            self._judge_decision = _deterministic_judge_decision(
+                error=exc,
+                artifacts=artifacts,
+                artifact_validations=artifact_validations,
+                answer_markdown=answer_markdown,
+                sandbox_output=sandbox_output,
+            )
         trace.completed(
             started_event_id=start_id,
             agent=AgentName.judge,
             message=f"Judge decision: {self._judge_decision.status.value} ({self._judge_decision.scores.overall}/100).",
             metadata={
+                "judgeProvider": judge_provider,
                 "reason": self._judge_decision.reason,
                 "scores": score_summary(self._judge_decision),
                 "criticalFailures": self._judge_decision.critical_failures,
@@ -651,3 +671,82 @@ def _record_count(payload: object) -> int | None:
         if isinstance(value, list):
             return len(value)
     return None
+
+
+def _goal_likely_wants_chart(goal: str) -> bool:
+    normalized = goal.lower()
+    return any(
+        term in normalized
+        for term in [
+            "show me",
+            "chart",
+            "plot",
+            "visualize",
+            "highest",
+            "lowest",
+            "rank",
+            "ranking",
+            "concentration",
+            "distribution",
+            "compare",
+        ]
+    )
+
+
+def _deterministic_judge_decision(
+    *,
+    error: Exception,
+    artifacts: list[ArtifactRef],
+    artifact_validations: list[ArtifactValidationResult],
+    answer_markdown: str | None,
+    sandbox_output,
+) -> JudgeDecision:
+    critical_failures: list[str] = []
+    failed_validations = [validation for validation in artifact_validations if not validation.passed]
+    if failed_validations:
+        critical_failures.extend(
+            f"Artifact {validation.artifact_id} failed validation."
+            for validation in failed_validations
+        )
+    if sandbox_output and sandbox_output.execution_status != "completed":
+        critical_failures.append("Sandbox execution did not complete.")
+    if sandbox_output and sandbox_output.contract_status != "satisfied":
+        critical_failures.append("Sandbox contract was not satisfied.")
+    if not answer_markdown or not answer_markdown.strip():
+        critical_failures.append("No final answer markdown was produced.")
+
+    artifact_quality = 100 if artifacts and not failed_validations else 70 if artifacts else 60
+    completion = 100 if answer_markdown and not critical_failures else 65
+    grounding = 100 if not failed_validations else 70
+    relevance = 85 if answer_markdown else 60
+    preference_alignment = 85 if sandbox_output and sandbox_output.contract_status == "satisfied" else 65
+    overall = min(relevance, completion, grounding, artifact_quality, preference_alignment)
+
+    status = JudgeStatus.approved if overall >= 85 and not critical_failures else JudgeStatus.needs_revision
+    target_agent = None
+    if critical_failures:
+        target_agent = failed_validations[0].source_agent if failed_validations else "sandbox"
+
+    return JudgeDecision(
+        status=status,
+        reason=(
+            "LLM judge was unavailable, so deterministic validation scored the completed output. "
+            f"Judge error: {_safe_error(error)}"
+        ),
+        scores=JudgeScores(
+            relevance=relevance,
+            completion=completion,
+            grounding=grounding,
+            artifact_quality=artifact_quality,
+            preference_alignment=preference_alignment,
+            overall=overall,
+        ),
+        critical_failures=critical_failures,
+        target_agent=target_agent,
+        revision_instructions="Resolve deterministic validation failures." if critical_failures else None,
+    )
+
+
+def _safe_error(exc: Exception) -> str:
+    message = str(exc).replace("\n", " ").strip()
+    return message[:300] or exc.__class__.__name__

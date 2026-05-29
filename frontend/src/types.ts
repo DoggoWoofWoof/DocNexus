@@ -50,6 +50,9 @@ export type SandboxOutput = {
   chartArtifactId?: string | null;
   executionStatus: "completed" | "failed";
   executionProvider: string;
+  attemptCount: number;
+  contractStatus: "satisfied" | "failed";
+  contractMessages: string[];
 };
 
 export type JudgeDecision = {

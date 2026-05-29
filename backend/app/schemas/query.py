@@ -61,6 +61,9 @@ class SandboxOutput(CamelModel):
     chart_artifact_id: str | None = None
     execution_status: Literal["completed", "failed"] = "completed"
     execution_provider: str = "local_subprocess"
+    attempt_count: int = 1
+    contract_status: Literal["satisfied", "failed"] = "satisfied"
+    contract_messages: list[str] = Field(default_factory=list)
 
 
 class QueryResponse(CamelModel):

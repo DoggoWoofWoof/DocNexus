@@ -1,4 +1,5 @@
 import json
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -37,6 +38,7 @@ class MistralToolClient:
         tools: list[dict[str, Any]],
         tool_choice: str = "auto",
         parallel_tool_calls: bool = True,
+        temperature: float = 0.0,
     ) -> MistralMessage:
         if not self.settings.mistral_api_key:
             raise MistralConfigurationError("MISTRAL_API_KEY is not configured.")
@@ -53,16 +55,22 @@ class MistralToolClient:
 
         client = Mistral(api_key=self.settings.mistral_api_key)
 
-        try:
-            response = client.chat.complete(
-                model=self.settings.mistral_model,
-                messages=messages,
-                tools=tools,
-                tool_choice=tool_choice,
-                parallel_tool_calls=parallel_tool_calls,
-            )
-        except Exception as exc:
-            raise MistralClientError(f"Mistral chat completion failed: {exc}") from exc
+        for attempt, delay in enumerate([0.0, 1.5, 3.0], start=1):
+            if delay:
+                time.sleep(delay)
+            try:
+                response = client.chat.complete(
+                    model=self.settings.mistral_model,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    parallel_tool_calls=parallel_tool_calls,
+                    temperature=temperature,
+                )
+                break
+            except Exception as exc:
+                if attempt == 3 or not _is_rate_limit_error(exc):
+                    raise MistralClientError(f"Mistral chat completion failed: {exc}") from exc
 
         return self._parse_response(response)
 
@@ -86,14 +94,19 @@ class MistralToolClient:
             ) from exc
 
         client = Mistral(api_key=self.settings.mistral_api_key)
-        try:
-            response = client.chat.complete(
-                model=self.settings.mistral_model,
-                messages=messages,
-                temperature=temperature,
-            )
-        except Exception as exc:
-            raise MistralClientError(f"Mistral text completion failed: {exc}") from exc
+        for attempt, delay in enumerate([0.0, 1.5, 3.0], start=1):
+            if delay:
+                time.sleep(delay)
+            try:
+                response = client.chat.complete(
+                    model=self.settings.mistral_model,
+                    messages=messages,
+                    temperature=temperature,
+                )
+                break
+            except Exception as exc:
+                if attempt == 3 or not _is_rate_limit_error(exc):
+                    raise MistralClientError(f"Mistral text completion failed: {exc}") from exc
 
         try:
             content = response.choices[0].message.content
@@ -143,3 +156,8 @@ class MistralToolClient:
         if isinstance(value, dict):
             return value.get(key)
         return getattr(value, key, None)
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "429" in message or "rate limit" in message or "rate_limited" in message

@@ -135,3 +135,18 @@ Why:
 Tradeoff:
 
 - NDJSON streaming is less standardized in browser APIs than SSE, so the frontend owns a small line parser. For a production multi-user workflow, SSE or WebSockets could still be added on top of the same trace callback boundary.
+
+## ADR 009 - Keep Physician Rows In Backend State, Not Tool Arguments
+
+Decision: Treat Mistral tool calls as intent and lightweight parameter selection. The backend injects the canonical filtered physician context from `get_physician_data` into PPT, Excel, Report, and Sandbox agents.
+
+Why:
+
+- Full physician rows are already available in LangGraph state after the data node runs.
+- Asking the LLM to serialize large `physician_list` or `dataset` payloads can create malformed partial rows.
+- Canonical backend injection guarantees that every downstream artifact uses the same filtered cohort.
+- This makes trace counts easier to explain: the data node owns record selection, downstream agents own artifact or analysis generation.
+
+Tradeoff:
+
+- Downstream agent tool calls are slightly less self-contained, but the graph state is the right place for shared workflow context.

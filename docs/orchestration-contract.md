@@ -275,7 +275,7 @@ START
 END
 ```
 
-The `plan` node calls Mistral with native tools. If tool calls are returned, `route_tool` sends each call to its own agent node. Data retrieval is ordered before artifact agents so the same filtered physician context can be reused across PPT, Excel, report, and sandbox outputs. The graph loops back to `plan` for up to three planning steps.
+The `plan` node calls Mistral with native tools. If tool calls are returned, `route_tool` sends each call to its own agent node. Data retrieval is ordered before artifact agents so the same filtered physician context can be reused across PPT, Excel, report, and sandbox outputs. Downstream agents receive this canonical context from graph state; Mistral is not trusted to serialize full physician rows in tool arguments. For analysis-style queries, the graph can add the sandbox node immediately after data retrieval when Mistral stops early.
 
 ## Judge Loop
 

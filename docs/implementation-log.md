@@ -544,3 +544,32 @@ Verification:
 - Ran the frontend production build.
 - Ran the exact streamed query: "Run an analysis and show me which states have the highest concentration of high-volume NSCLC prescribers."
 - Confirmed the workflow now goes data -> sandbox -> judge, uses E2B, has no failed trace events, avoids external population denominators, and receives judge approval.
+
+## 2026-05-30 - Canonical Agent Context And Sandbox Chart Contract
+
+What changed:
+
+- Made downstream PPT, Excel, Report, and Sandbox agents use the canonical filtered physician context from the data node.
+- Updated tool schemas so Mistral does not need to serialize full `physician_list` or `dataset` payloads in tool arguments.
+- Added a query-evidence guard that removes invented specialty filters when the user asks for generic NSCLC prescribers instead of a specialty-specific cohort.
+- Added sandbox preflight checks for requested charts: generated code must create a real matplotlib plot and save it to `chart.png`.
+- Added a sandbox guard against narrowing an already-filtered `high` cohort to only `volumeTier == "very_high"`.
+- Improved analysis fallback markdown with the filtered record count, concentration definition, stdout table, and one bound chart artifact.
+- Removed the duplicate chart image from the Sandbox Output panel; the chart now appears once in Results and remains downloadable from Artifacts.
+- Added short Mistral retry delays for rate-limit responses and deterministic judge resilience when semantic judge calls are temporarily unavailable.
+
+Why this came next:
+
+- Mistral occasionally inferred `Medical Oncology` from generic "NSCLC prescribers", which changed the record count from 30 to 21.
+- Mistral also sometimes passed partial physician rows into artifact-agent tool arguments, causing Pydantic validation errors in PPT/Excel/Report flows.
+- Sandbox code could print a table without saving a chart, or re-filter the cohort to `very_high`, which made results inconsistent with the data-agent filter semantics.
+- The UI should show one chart artifact with a clear writeup, not duplicate chart renderings or a broken `chart.png` markdown link.
+
+Verification:
+
+- Ran backend compilation for the changed agents, schemas, client, and workflow modules.
+- Ran the frontend production build.
+- Ran a mocked LangGraph analysis workflow where Mistral invented `Medical Oncology` and generated bad `volumeTier == "very_high"` sandbox code.
+- Confirmed the guard removed the invented specialty, retrieved 30 records, rejected the bad sandbox code, retried, generated one chart artifact, bound `/artifacts/{id}` into Results, and received judge approval.
+- Ran direct PPT, Excel, and Report tool executions with malformed `physician_list` arguments and confirmed all three used the 12 canonical filtered records instead of the bad model-supplied list.
+- Restarted the FastAPI backend on `127.0.0.1:8000` and confirmed `/health` returned `status=ok`.

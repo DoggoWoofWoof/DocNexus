@@ -19,6 +19,7 @@ from backend.app.services.prompts import load_prompt
 
 TextGenerator = Callable[[list[dict[str, object]]], str]
 
+MAX_SANDBOX_ATTEMPTS = 3
 SAFE_IMPORTS = {"collections", "json", "math", "matplotlib", "matplotlib.pyplot", "pandas", "statistics"}
 BANNED_CALLS = {"eval", "exec", "compile", "open", "input", "breakpoint"}
 BANNED_NAMES = {"os", "sys", "subprocess", "socket", "shutil", "pathlib", "requests", "urllib"}
@@ -114,34 +115,60 @@ def generate_and_run_sandbox_code(
     revision_instructions: str | None = None,
     artifact_provenance: dict[str, object] | None = None,
 ) -> SandboxOutput:
-    code = _generate_code(
-        generate_text=generate_text,
-        code_goal=code_goal,
-        dataset=dataset,
-        chart_type=chart_type,
-        revision_instructions=revision_instructions,
-        previous_error=None,
-    )
-    result, chart_path = _run_configured_sandbox(settings=settings, code=code, dataset=dataset)
+    previous_error: str | None = None
+    result: SandboxOutput | None = None
+    chart_path: Path | None = None
+    contract_messages: list[str] = []
 
-    if result.execution_status == "failed":
-        corrected_code = _generate_code(
+    for attempt in range(1, MAX_SANDBOX_ATTEMPTS + 1):
+        code = _generate_code(
             generate_text=generate_text,
             code_goal=code_goal,
             dataset=dataset,
             chart_type=chart_type,
             revision_instructions=revision_instructions,
-            previous_error=result.stderr,
+            previous_error=previous_error,
         )
-        corrected_result, chart_path = _run_configured_sandbox(
-            settings=settings,
-            code=corrected_code,
-            dataset=dataset,
-        )
-        corrected_result.code = corrected_code
-        result = corrected_result
-    else:
+
+        contract_error = _chart_code_contract_error(code=code, chart_type=chart_type, code_goal=code_goal)
+        if contract_error:
+            result = SandboxOutput(
+                code=code,
+                stderr=contract_error,
+                execution_status="failed",
+                execution_provider="contract_preflight",
+                attempt_count=attempt,
+                contract_status="failed",
+                contract_messages=[contract_error],
+            )
+            chart_path = None
+            previous_error = contract_error
+            contract_messages.append(f"Attempt {attempt}: {contract_error}")
+            continue
+
+        result, chart_path = _run_configured_sandbox(settings=settings, code=code, dataset=dataset)
         result.code = code
+        result.attempt_count = attempt
+
+        if result.execution_status == "completed" and (not chart_type or chart_path is not None):
+            result.contract_status = "satisfied"
+            result.contract_messages = _contract_messages(
+                chart_type=chart_type,
+                chart_path=chart_path,
+                attempts=attempt,
+                previous_messages=contract_messages,
+            )
+            break
+
+        previous_error = _retry_instruction(result=result, chart_type=chart_type)
+        contract_messages.append(f"Attempt {attempt}: {previous_error}")
+    else:
+        if result is None:
+            raise RuntimeError("Sandbox execution did not produce a result.")
+        result.execution_status = "failed"
+        result.contract_status = "failed"
+        result.contract_messages = contract_messages
+        result.stderr = "\n".join(part for part in [result.stderr.strip(), previous_error] if part)
 
     if result.chart_artifact_id:
         return result
@@ -208,10 +235,13 @@ def _generate_code(
                         "Return only Python code.",
                         "Do not include markdown fences.",
                         "Use only the provided dataset; do not add external population, census, benchmark, or market-size values.",
+                        "The dataset has already been filtered by the data agent. Do not narrow it again by specialty, geography, ICD-10, or volume unless revision instructions explicitly require that.",
+                        "If the upstream filter says high-volume, the dataset already includes both high and very_high records. Do not filter to volumeTier == 'very_high'.",
                         "For concentration questions, compute count and share within the supplied dataset unless a denominator exists in the dataset.",
                         "Do not import unsafe modules; pd, plt, dataset, and helpers are already available.",
                         "Use dataset as the input list of records.",
-                        "Save any chart to chart.png.",
+                        "If chartType is provided, create a real matplotlib chart and save it exactly to chart.png.",
+                        "If chartType is bar, use plt.bar/ax.bar/df.plot(kind='bar') and then plt.savefig('chart.png') or fig.savefig('chart.png').",
                     ],
                     "previousError": previous_error,
                 }
@@ -431,3 +461,111 @@ def _strip_code_fences(text: str) -> str:
 def _safe_error(exc: Exception) -> str:
     message = str(exc).replace("\n", " ").strip()
     return message[:300] or exc.__class__.__name__
+
+
+def _chart_code_contract_error(*, code: str, chart_type: str | None, code_goal: str) -> str | None:
+    volume_error = _volume_filter_contract_error(code=code, code_goal=code_goal)
+    if volume_error:
+        return volume_error
+
+    if not chart_type:
+        return None
+
+    lowered = code.lower()
+    if "chart.png" not in lowered:
+        return (
+            f"A {chart_type} chart was requested. The sandbox code must save the chart exactly as "
+            "`chart.png` using matplotlib, for example `plt.savefig('chart.png')`."
+        )
+    if "savefig" not in lowered:
+        return (
+            f"A {chart_type} chart was requested. The sandbox code mentions chart.png but does not "
+            "call `savefig`, so no chart artifact would be produced."
+        )
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as exc:
+        return f"Sandbox code is not valid Python: {exc.msg}."
+
+    plotting_calls = {"bar", "barh", "plot", "scatter", "hist", "pie", "boxplot", "imshow"}
+    has_plot_call = False
+    has_savefig_call = False
+    saves_chart_png = False
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+
+        function = node.func
+        function_name = ""
+        if isinstance(function, ast.Attribute):
+            function_name = function.attr
+        elif isinstance(function, ast.Name):
+            function_name = function.id
+
+        if function_name in plotting_calls:
+            has_plot_call = True
+        if function_name == "savefig":
+            has_savefig_call = True
+            saves_chart_png = any(
+                isinstance(arg, ast.Constant)
+                and isinstance(arg.value, str)
+                and arg.value.replace("\\", "/").endswith("chart.png")
+                for arg in node.args
+            )
+
+    if not has_plot_call:
+        return (
+            f"A {chart_type} chart was requested. The sandbox code must create a real matplotlib plot "
+            "before saving chart.png."
+        )
+    if not has_savefig_call or not saves_chart_png:
+        return (
+            f"A {chart_type} chart was requested. Save the plot exactly to `chart.png` with "
+            "`plt.savefig('chart.png')` or `fig.savefig('chart.png')`."
+        )
+
+    return None
+
+
+def _volume_filter_contract_error(*, code: str, code_goal: str) -> str | None:
+    lowered_code = code.lower()
+    lowered_goal = code_goal.lower()
+    asks_high_volume = ("high-volume" in lowered_goal or "high volume" in lowered_goal) and "very high" not in lowered_goal
+    if asks_high_volume and "volumetier" in lowered_code:
+        return (
+            "The data agent has already filtered the dataset to high-volume records, where `high` includes "
+            "`high` and `very_high`. Do not filter the sandbox dataset again by `volumeTier`; count every "
+            "record supplied in `dataset`."
+        )
+    return None
+
+
+def _retry_instruction(*, result: SandboxOutput, chart_type: str | None) -> str:
+    if result.execution_status == "completed" and chart_type:
+        return (
+            f"Sandbox execution completed, but the required {chart_type} chart artifact was missing. "
+            "Revise the code to build a matplotlib chart and save it exactly as chart.png."
+        )
+    stderr = result.stderr.strip()
+    if stderr:
+        return stderr[-1200:]
+    return "Sandbox execution failed. Revise the code and keep the analysis grounded in the supplied dataset."
+
+
+def _contract_messages(
+    *,
+    chart_type: str | None,
+    chart_path: Path | None,
+    attempts: int,
+    previous_messages: list[str],
+) -> list[str]:
+    messages = list(previous_messages)
+    if chart_type and chart_path:
+        messages.append(f"Attempt {attempts}: {chart_type} chart contract satisfied with chart.png.")
+    elif chart_type:
+        messages.append(f"Attempt {attempts}: chart contract failed.")
+    else:
+        messages.append(f"Attempt {attempts}: sandbox analysis completed.")
+    return messages

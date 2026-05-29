@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ComponentProps } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -75,8 +75,6 @@ function App() {
     }
   }
 
-  const chartArtifact = response?.artifacts.find((artifact) => artifact.id === response.sandboxOutput?.chartArtifactId);
-
   return (
     <main className="app-shell">
       <section className="workspace-header">
@@ -133,7 +131,9 @@ function App() {
           </div>
           {response?.answerMarkdown ? (
             <div className="markdown-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{normalizeMarkdown(response.answerMarkdown)}</ReactMarkdown>
+              <ReactMarkdown components={{ img: MarkdownImage }} remarkPlugins={[remarkGfm]}>
+                {normalizeMarkdown(response.answerMarkdown)}
+              </ReactMarkdown>
             </div>
           ) : (
             <EmptyState text="Run a query to render report text, generated analysis, and artifact links." />
@@ -155,7 +155,6 @@ function App() {
               </details>
               {response.sandboxOutput.stdout ? <pre className="stdout">{normalizeMarkdown(response.sandboxOutput.stdout)}</pre> : null}
               {response.sandboxOutput.stderr ? <pre className="stderr">{response.sandboxOutput.stderr}</pre> : null}
-              {chartArtifact ? <img alt="Sandbox chart" src={artifactUrl(chartArtifact.downloadUrl)} /> : null}
             </div>
           ) : null}
         </div>
@@ -194,6 +193,11 @@ function App() {
       </section>
     </main>
   );
+}
+
+function MarkdownImage({ src = "", alt = "", ...props }: ComponentProps<"img">) {
+  const resolvedSrc = typeof src === "string" && src.startsWith("/artifacts/") ? artifactUrl(src) : src;
+  return <img {...props} alt={alt} src={resolvedSrc} />;
 }
 
 function TraceList({ trace, isRunning }: { trace: TraceEvent[]; isRunning: boolean }) {
@@ -242,6 +246,10 @@ function traceMetadataItems(metadata: Record<string, unknown>): Array<readonly [
   appendFilterItems(items, metadata.filters, "Applied ");
   appendValue(items, "Records", metadata.count);
   appendValue(items, "Physicians", metadata.physicianCount);
+  appendValue(items, "Chart", metadata.chartArtifactId);
+  appendValue(items, "Attempts", metadata.attemptCount);
+  appendValue(items, "Contract", metadata.contractStatus);
+  appendValue(items, "Judge", metadata.judgeProvider);
   appendRenderItems(items, metadata.renderExecution);
   appendScoreItems(items, metadata.scores);
   appendValue(items, "Target", metadata.targetAgent);

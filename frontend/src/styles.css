@@ -517,9 +517,11 @@ pre {
   color: #9f2d20;
 }
 
+.markdown-body img,
 .sandbox-box img {
   border: 1px solid #d8e2ee;
   border-radius: 8px;
+  display: block;
   margin-top: 10px;
   max-width: 100%;
 }

@@ -33,8 +33,10 @@ Current implemented slice:
 - LLM-backed Excel Agent that plans workbook purpose/analysis notes, then renders real `.xlsx` workbooks through the shared E2B/local sandbox execution layer
 - LLM-backed Report Agent that returns markdown in the UI response and stores a downloadable `.md` artifact
 - LLM-backed Sandbox Agent with E2B execution when configured, restricted local Python subprocess fallback, stdout capture, retry, and chart artifact registration
+- Sandbox contract checks that reject generated code when a requested chart is not saved to `chart.png` or when code incorrectly narrows an already-filtered high-volume cohort to `very_high` only
 - LLM Judge Agent that returns an approve/revise/fail decision and appears in the trace
 - Per-agent LangGraph nodes with a targeted revision edge from `needs_revision` back to the relevant agent once
+- Canonical filtered physician context injected by the backend into PPT, Excel, Report, and Sandbox agents so Mistral does not serialize full physician rows in tool arguments
 - React/Vite frontend with query-only composer, inferred scope display, streaming trace timeline, result rendering, artifact downloads, sandbox output, and physician preview
 - Source-controlled prompt files for every planned agent
 
@@ -88,6 +90,7 @@ The key design choice is separating model judgment from workflow execution:
 - Mistral decides which tools to call using native function calling.
 - LangGraph manages state, traceability, retries, and fan-out across agents.
 - FastAPI owns deterministic execution, artifact generation, file storage, and API contracts.
+- Backend services own canonical record passing. Tool calls express intent and filters; downstream agents reuse the data-node result.
 
 ## Tech Stack
 
@@ -156,7 +159,7 @@ START
 END
 ```
 
-The `plan` node calls Mistral with native tools. LangGraph then routes each selected tool call through its own graph node. The graph loops back to `plan` for up to three planning steps, then runs the judge. If the judge returns `needs_revision`, `prepare_revision` converts that feedback into a targeted tool call and routes back to only the failed agent once.
+The `plan` node calls Mistral with native tools. LangGraph then routes each selected tool call through its own graph node. Data retrieval is executed before downstream artifact/analysis work. For analysis queries, the graph can deterministically add the sandbox node after data retrieval so the workflow does not ask the model whether a chart is needed after the user already requested analysis. The graph then runs the judge. If the judge returns `needs_revision`, `prepare_revision` converts that feedback into a targeted tool call and routes back to only the failed agent once.
 
 This is the main reason LangGraph makes more sense than a simple LangChain-only chain: the system can include an LLM-as-judge step after agent execution. For example, the judge can inspect whether the PPT and Excel outputs are grounded in the same filtered physician set, whether the report references the user's preferences, and whether sandbox code produced a valid chart. If an output fails, the graph can route back to the relevant agent once with targeted feedback.
 
@@ -202,7 +205,7 @@ Each specialized agent will have its own prompt file and structured input/output
 
 PPT Agent:
 
-- Input: topic, physician list, ICD-10 scope, slide count, style notes
+- Input: topic, canonical filtered physician context, ICD-10 scope, slide count, style notes
 - Output: downloadable `.pptx`
 - LLM role: generate the deck title, subtitle, insight bullets, and table rationale as structured JSON
 - Renderer role: use `python-pptx` inside the shared E2B/local artifact worker to create the actual PowerPoint file deterministically
@@ -210,7 +213,7 @@ PPT Agent:
 
 Excel Agent:
 
-- Input: analysis type, physician list, dimensions, ICD-10 scope
+- Input: analysis type, canonical filtered physician context, dimensions, ICD-10 scope
 - Output: downloadable `.xlsx`
 - LLM role: generate workbook title, summary, sheet plan, and analysis notes as structured JSON
 - Renderer role: use `openpyxl` inside the shared E2B/local artifact worker to create the actual workbook deterministically
@@ -218,21 +221,22 @@ Excel Agent:
 
 Report Agent:
 
-- Input: report type, sections, physician list, ICD-10 context, geography
+- Input: report type, sections, canonical filtered physician context, ICD-10 context, geography
 - Output: markdown rendered in UI, optional `.docx`
 - Sections: executive summary, physician landscape, geographic and specialty distribution, insights, next steps
 
 Sandbox Agent:
 
-- Input: natural language analysis goal and dataset
+- Input: natural language analysis goal and canonical filtered dataset
 - Output: generated Python code, stdout/stderr, chart image if generated
-- Behavior: execute code in E2B when available; retry once with model self-correction if execution fails
+- Behavior: execute code in E2B when available; retry with model self-correction if execution or chart contract checks fail
 
 Local fallback behavior:
 
 - Run generated code through Python `exec()` inside a separate subprocess, never inside the FastAPI process
 - Use a temporary working directory for input data and generated charts
 - Pass the physician dataset as JSON/CSV files rather than exposing application objects
+- Treat the dataset as already filtered by the data agent. For example, `volume_threshold=high` includes both `high` and `very_high`, so sandbox code must not narrow the cohort to only `very_high` unless the user explicitly asks for that.
 - Enforce a short timeout
 - Capture stdout/stderr
 - Apply AST checks before execution to block dangerous imports and operations

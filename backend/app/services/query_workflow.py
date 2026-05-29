@@ -1,4 +1,5 @@
 from collections.abc import Callable
+import re
 from typing import Any, TypedDict
 from uuid import uuid4
 
@@ -167,7 +168,12 @@ def run_query_workflow(
                 "answer_markdown": model_message.content,
             }
 
-        tool_calls = _order_tool_calls(model_message.tool_calls)
+        tool_calls = _order_tool_calls(
+            [
+                _guard_tool_arguments_for_query(tool_call, state["request"].query, state["trace"])
+                for tool_call in model_message.tool_calls
+            ]
+        )
         state["trace"].completed(
             started_event_id=None,
             agent=AgentName.orchestrator,
@@ -195,7 +201,24 @@ def run_query_workflow(
         }
 
     def data_agent_node(state: QueryWorkflowState) -> dict[str, object]:
-        return _execute_current_tool(state)
+        updates = _execute_current_tool(state)
+        sandbox_followup = _required_sandbox_after_data(state, updates)
+        if sandbox_followup is None:
+            return updates
+
+        pending_tool_calls = list(state.get("pending_tool_calls") or [])
+        state["trace"].retrying(
+            agent=AgentName.orchestrator,
+            message="Workflow guard routed analysis query to sandbox.",
+            metadata={
+                "reason": "The query asks for computed analysis, so sandbox execution is required after data retrieval.",
+                "selectedTools": [sandbox_followup.name],
+            },
+        )
+        return {
+            **updates,
+            "pending_tool_calls": [*pending_tool_calls, sandbox_followup],
+        }
 
     def excel_agent_node(state: QueryWorkflowState) -> dict[str, object]:
         return _execute_current_tool(state)
@@ -223,12 +246,12 @@ def run_query_workflow(
 
     def judge_node(state: QueryWorkflowState) -> dict[str, object]:
         runtime = state["runtime"]
-        fallback_answer = (
-            f"Generated {len(runtime.artifact_refs)} artifact(s)."
-            if runtime.artifact_refs
-            else "Orchestration completed without file artifacts."
+        fallback_answer = _fallback_answer(runtime)
+        final_answer = _bind_chart_artifact_links(
+            runtime.report_markdown or state.get("answer_markdown") or fallback_answer,
+            sandbox_output=runtime.sandbox_output,
+            artifacts=runtime.artifact_refs,
         )
-        final_answer = runtime.report_markdown or state.get("answer_markdown") or fallback_answer
         artifact_validations = runtime.validate_generated_artifacts(trace=state["trace"])
         runtime.run_judge(
             trace=state["trace"],
@@ -394,6 +417,8 @@ def run_query_workflow(
             return "judge"
         if state.get("pending_tool_calls"):
             return "route_tool"
+        if _analysis_result_is_ready(state):
+            return "judge"
         if state["step_count"] >= MAX_PLANNING_STEPS:
             return "stop_planning"
         return "plan"
@@ -450,6 +475,61 @@ def run_query_workflow(
     return response
 
 
+IMAGE_MARKDOWN_RE = re.compile(r"!\[([^\]]*)\]\(([^)]*)\)")
+
+
+def _bind_chart_artifact_links(
+    markdown: str,
+    *,
+    sandbox_output: SandboxOutput | None,
+    artifacts: list[ArtifactRef],
+) -> str:
+    chart = _find_chart_artifact(sandbox_output=sandbox_output, artifacts=artifacts)
+
+    def replace_image(match: re.Match[str]) -> str:
+        alt_text = match.group(1).strip() or "Sandbox chart"
+        raw_url = match.group(2).strip().strip("\"'")
+        if not _looks_like_chart_image(alt_text, raw_url):
+            return match.group(0)
+        if chart is None:
+            return ""
+        return f"![{alt_text}]({chart.download_url})"
+
+    bound_markdown = IMAGE_MARKDOWN_RE.sub(replace_image, markdown)
+    if chart and chart.download_url not in bound_markdown:
+        return f"{bound_markdown.rstrip()}\n\n![Sandbox chart]({chart.download_url})"
+    return bound_markdown
+
+
+def _find_chart_artifact(
+    *,
+    sandbox_output: SandboxOutput | None,
+    artifacts: list[ArtifactRef],
+) -> ArtifactRef | None:
+    chart_id = sandbox_output.chart_artifact_id if sandbox_output else None
+    for artifact in artifacts:
+        if artifact.id == chart_id:
+            return artifact
+    for artifact in artifacts:
+        if artifact.type.value in {"chart_png", "chart_svg"}:
+            return artifact
+    return None
+
+
+def _looks_like_chart_image(alt_text: str, raw_url: str) -> bool:
+    lowered = f"{alt_text} {raw_url}".lower()
+    if raw_url.startswith(("http://", "https://", "data:")):
+        return False
+    return (
+        raw_url == ""
+        or raw_url.startswith("./")
+        or raw_url.startswith("../")
+        or raw_url.startswith("/artifacts/")
+        or "chart" in lowered
+        or raw_url.endswith((".png", ".svg", ".jpg", ".jpeg", ".webp"))
+    )
+
+
 def _execute_current_tool(state: QueryWorkflowState) -> dict[str, object]:
     tool_call = state.get("current_tool_call")
     if tool_call is None:
@@ -486,6 +566,79 @@ def _execute_current_tool(state: QueryWorkflowState) -> dict[str, object]:
     }
 
 
+def _fallback_answer(runtime: OrchestratorService) -> str:
+    sandbox_output = runtime.sandbox_output
+    if sandbox_output and sandbox_output.stdout.strip():
+        physician_count = len(runtime.physician_context)
+        return (
+            "## Analysis Result\n\n"
+            f"I analyzed {physician_count} filtered physician record"
+            f"{'' if physician_count == 1 else 's'} returned by the data agent. "
+            "Because this dataset does not include an external denominator such as state population, "
+            "concentration is calculated as each state's count and share within the filtered cohort.\n\n"
+            "```text\n"
+            f"{sandbox_output.stdout.strip()}\n"
+            "```\n\n"
+            "The chart below is the sandbox-generated bar chart for the same state-level counts."
+        )
+    if runtime.artifact_refs:
+        artifact_lines = "\n".join(
+            f"- [{artifact.filename}]({artifact.download_url})"
+            for artifact in runtime.artifact_refs
+        )
+        return f"Generated {len(runtime.artifact_refs)} artifact(s):\n\n{artifact_lines}"
+    return "Orchestration completed without file artifacts."
+
+
+def _guard_tool_arguments_for_query(
+    tool_call: MistralToolCall,
+    query: str,
+    trace: TraceBuilder,
+) -> MistralToolCall:
+    if tool_call.name != "get_physician_data":
+        return tool_call
+
+    arguments = dict(tool_call.arguments)
+    removed: dict[str, object] = {}
+    if arguments.get("specialty") and not _query_explicitly_mentions_specialty(query):
+        removed["specialty"] = arguments.pop("specialty")
+
+    if not removed:
+        return tool_call
+
+    trace.retrying(
+        agent=AgentName.orchestrator,
+        message="Removed inferred filters that were not stated in the query.",
+        metadata={
+            "removedFilters": removed,
+            "reason": "The user asked for NSCLC prescribers, not a specific specialty subset.",
+        },
+    )
+    return MistralToolCall(id=tool_call.id, name=tool_call.name, arguments=arguments)
+
+
+def _query_explicitly_mentions_specialty(query: str) -> bool:
+    normalized = query.lower()
+    specialty_terms = [
+        "oncologist",
+        "oncologists",
+        "oncology",
+        "pulmonologist",
+        "pulmonologists",
+        "pulmonology",
+        "pulmonary",
+        "thoracic surgeon",
+        "thoracic surgeons",
+        "thoracic surgery",
+        "radiation oncologist",
+        "radiation oncology",
+        "medical oncology",
+        "specialty",
+        "specialties",
+    ]
+    return any(term in normalized for term in specialty_terms)
+
+
 def _order_tool_calls(tool_calls: list[MistralToolCall]) -> list[MistralToolCall]:
     return sorted(tool_calls, key=lambda tool_call: TOOL_EXECUTION_ORDER.get(tool_call.name, 99))
 
@@ -512,6 +665,38 @@ def _missing_required_followup_tool(state: QueryWorkflowState) -> MistralToolCal
         )
 
     return None
+
+
+def _required_sandbox_after_data(
+    state: QueryWorkflowState,
+    updates: dict[str, object],
+) -> MistralToolCall | None:
+    request = state["request"]
+    runtime = state["runtime"]
+    tool_records = updates.get("tool_call_records", state.get("tool_call_records", []))
+    pending_tool_calls = state.get("pending_tool_calls") or []
+
+    if (
+        _query_requires_sandbox(request.query)
+        and runtime.physician_context
+        and runtime.sandbox_output is None
+        and not _tool_was_called("call_sandbox_agent", tool_records)
+        and not any(tool_call.name == "call_sandbox_agent" for tool_call in pending_tool_calls)
+    ):
+        return MistralToolCall(
+            id=f"guard_{uuid4().hex[:12]}",
+            name="call_sandbox_agent",
+            arguments={
+                "code_goal": request.query,
+                "dataset": runtime.physician_context,
+                "chart_type": "bar" if _query_likely_wants_chart(request.query) else None,
+            },
+        )
+    return None
+
+
+def _analysis_result_is_ready(state: QueryWorkflowState) -> bool:
+    return _query_requires_sandbox(state["request"].query) and state["runtime"].sandbox_output is not None
 
 
 def _query_requires_sandbox(query: str) -> bool:
