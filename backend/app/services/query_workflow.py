@@ -19,6 +19,7 @@ from backend.app.services.trace import TraceBuilder
 
 MAX_PLANNING_STEPS = 3
 MAX_REVISION_ATTEMPTS = 1
+JUDGE_APPROVAL_THRESHOLD = 85
 
 TOOL_NODE_BY_NAME = {
     "get_physician_data": "data_agent",
@@ -215,6 +216,30 @@ def run_query_workflow(
         )
 
         decision = runtime.judge_decision
+        if decision and _should_force_revision(decision, artifact_validations):
+            decision = JudgeDecision(
+                status=JudgeStatus.needs_revision,
+                reason=(
+                    f"Judge overall score {decision.scores.overall}/100 is below "
+                    f"the {JUDGE_APPROVAL_THRESHOLD}/100 approval threshold."
+                ),
+                scores=decision.scores,
+                critical_failures=decision.critical_failures,
+                target_agent=decision.target_agent or _fallback_revision_target(artifact_validations),
+                revision_instructions=decision.revision_instructions
+                or _score_revision_instructions(decision),
+            )
+            runtime.set_judge_decision(decision)
+            state["trace"].retrying(
+                agent=AgentName.judge,
+                message=f"Judge score {decision.scores.overall}/100 requires revision.",
+                metadata={
+                    "threshold": JUDGE_APPROVAL_THRESHOLD,
+                    "scores": decision.scores.model_dump(by_alias=True),
+                    "targetAgent": decision.target_agent,
+                },
+            )
+
         if (
             decision
             and decision.status == JudgeStatus.needs_revision
@@ -223,6 +248,8 @@ def run_query_workflow(
             decision = JudgeDecision(
                 status=JudgeStatus.failed_after_retry,
                 reason=f"Judge still requested revision after {MAX_REVISION_ATTEMPTS} targeted retry.",
+                scores=decision.scores,
+                critical_failures=decision.critical_failures,
                 target_agent=decision.target_agent,
                 revision_instructions=decision.revision_instructions,
             )
@@ -577,3 +604,33 @@ def _json_dumps(value: object) -> str:
     import json
 
     return json.dumps(value)
+
+
+def _should_force_revision(
+    decision: JudgeDecision,
+    artifact_validations: list[ArtifactValidationResult],
+) -> bool:
+    if decision.status != JudgeStatus.approved:
+        return False
+    if decision.scores.overall < JUDGE_APPROVAL_THRESHOLD:
+        return True
+    return any(not validation.passed for validation in artifact_validations)
+
+
+def _fallback_revision_target(artifact_validations: list[ArtifactValidationResult]) -> str:
+    failed = [validation for validation in artifact_validations if not validation.passed]
+    if failed:
+        return failed[0].source_agent
+    if artifact_validations:
+        return min(artifact_validations, key=lambda validation: validation.score).source_agent
+    return "report"
+
+
+def _score_revision_instructions(decision: JudgeDecision) -> str:
+    scores = decision.scores.model_dump(by_alias=True)
+    score_text = ", ".join(f"{key}: {value}" for key, value in scores.items())
+    return (
+        "Revise the output to raise the judge score above "
+        f"{JUDGE_APPROVAL_THRESHOLD}/100. Current scores: {score_text}. "
+        f"Reason: {decision.reason}"
+    )

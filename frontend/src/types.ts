@@ -54,6 +54,15 @@ export type SandboxOutput = {
 export type JudgeDecision = {
   status: "approved" | "needs_revision" | "failed_after_retry";
   reason: string;
+  scores: {
+    relevance: number;
+    completion: number;
+    grounding: number;
+    artifactQuality: number;
+    preferenceAlignment: number;
+    overall: number;
+  };
+  criticalFailures: string[];
   targetAgent?: string | null;
   revisionInstructions?: string | null;
 };

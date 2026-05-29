@@ -128,7 +128,16 @@ The response shape is:
   "trace": [],
   "judgeDecision": {
     "status": "approved",
-    "reason": "Artifacts match the requested PPTX and XLSX outputs."
+    "reason": "Artifacts match the requested PPTX and XLSX outputs.",
+    "scores": {
+      "relevance": 95,
+      "completion": 95,
+      "grounding": 95,
+      "artifactQuality": 95,
+      "preferenceAlignment": 95,
+      "overall": 95
+    },
+    "criticalFailures": []
   },
   "metadata": {}
 }
@@ -276,3 +285,14 @@ agent outputs
 The judge checks semantic quality, such as whether outputs are grounded in the same physician data. Deterministic checks, such as file existence and expected sheet names, will stay in code.
 
 The revision loop is intentionally bounded to one targeted retry. `prepare_revision` maps judge targets such as `report`, `excel`, `ppt`, or `sandbox` back to the corresponding tool node, injects the judge's revision instructions into the tool arguments, removes that agent's stale artifact references from the final response, and re-runs only that node.
+
+The judge returns a scored rubric:
+
+- `relevance`
+- `completion`
+- `grounding`
+- `artifactQuality`
+- `preferenceAlignment`
+- `overall`
+
+The approval threshold is 85/100. If the judge returns `approved` with an `overall` score below 85, or if deterministic validation has failed, the graph treats the result as `needs_revision` and routes back to the best target agent.

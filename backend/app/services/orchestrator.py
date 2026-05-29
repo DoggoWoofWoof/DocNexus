@@ -3,7 +3,7 @@ from uuid import uuid4
 
 from sqlmodel import Session
 
-from backend.app.agents.judge_agent import judge_outputs
+from backend.app.agents.judge_agent import judge_outputs, score_summary
 from backend.app.agents.ppt_agent import generate_ppt_deck
 from backend.app.agents.report_agent import generate_report
 from backend.app.agents.sandbox_agent import generate_and_run_sandbox_code
@@ -565,9 +565,11 @@ class OrchestratorService:
         trace.completed(
             started_event_id=start_id,
             agent=AgentName.judge,
-            message=f"Judge decision: {self._judge_decision.status.value}.",
+            message=f"Judge decision: {self._judge_decision.status.value} ({self._judge_decision.scores.overall}/100).",
             metadata={
                 "reason": self._judge_decision.reason,
+                "scores": score_summary(self._judge_decision),
+                "criticalFailures": self._judge_decision.critical_failures,
                 "artifactValidationScores": {
                     result.artifact_id: result.score for result in artifact_validations
                 },

@@ -422,3 +422,29 @@ Verification:
 - Confirmed the validator returned `passed=true` and `score=100`.
 - Confirmed the judge received `artifactValidations`.
 - Confirmed the trace includes the deterministic validation step.
+
+## 2026-05-29 - Judge Scoring Rubric
+
+What changed:
+
+- Added `JudgeScores` with relevance, completion, grounding, artifact quality, preference alignment, and overall metrics.
+- Updated the Judge Agent prompt to require score JSON and critical failures.
+- Added fallback score handling for older or malformed judge responses.
+- Added an 85/100 approval threshold in the LangGraph workflow.
+- Forced targeted revision when the judge returns `approved` but the overall score is below threshold.
+- Included judge score summaries in trace metadata and trace messages.
+- Added a compact judge scorecard to the React results panel.
+
+Why this came next:
+
+- A scorecard makes the LLM-as-judge behavior easier to defend in interviews.
+- It gives the revision edge a measurable trigger instead of relying only on a binary label.
+- The UI can show quality progression when the graph reruns a targeted agent.
+
+Verification:
+
+- Ran Python compilation across the backend.
+- Ran a fake workflow where the first judge response returned `approved` with `overall=70`.
+- Confirmed LangGraph converted that into a targeted Excel revision.
+- Confirmed the second judge response with `overall=92` approved the final result.
+- Confirmed trace messages include both judge scores.

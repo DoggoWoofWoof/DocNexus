@@ -238,9 +238,12 @@ Responsibilities:
 - Verify that outputs are grounded in the filtered physician data
 - Confirm that preference context is explicitly referenced when required
 - Detect missing required sections, sheets, slides, or chart outputs
+- Score the response across relevance, completion, grounding, artifact quality, and preference alignment
 - Decide whether to approve, request one targeted revision, or return a partial result with a clear trace
 
 The judge will not replace deterministic validation. File existence, MIME type, sheet names, and artifact metadata will still be checked in code. The LLM judge is for semantic quality, not basic file validation.
+
+The workflow uses an 85/100 approval threshold. If the judge returns `approved` but the overall score is below that threshold, LangGraph converts it into a targeted revision and emits the score in the trace. The UI renders the final judge scorecard alongside the generated result.
 
 ### Context Reuse
 

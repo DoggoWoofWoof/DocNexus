@@ -208,6 +208,8 @@ function App() {
             <EmptyState text="Run a query to render report text, generated analysis, and artifact links." />
           )}
 
+          {response?.judgeDecision ? <JudgeScorecard response={response} /> : null}
+
           {response?.sandboxOutput ? (
             <div className="sandbox-box">
               <div className="sandbox-header">
@@ -310,6 +312,39 @@ function PhysicianTable({ physicians }: { physicians: Physician[] }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function JudgeScorecard({ response }: { response: QueryResponse }) {
+  const scores = response.judgeDecision?.scores;
+  if (!scores) {
+    return null;
+  }
+
+  const metrics = [
+    ["Relevance", scores.relevance],
+    ["Completion", scores.completion],
+    ["Grounding", scores.grounding],
+    ["Artifact Quality", scores.artifactQuality],
+    ["Preference Fit", scores.preferenceAlignment],
+  ] as const;
+
+  return (
+    <div className="judge-card">
+      <div className="judge-summary">
+        <span>{response.judgeDecision?.status}</span>
+        <strong>{scores.overall}/100</strong>
+      </div>
+      <p>{response.judgeDecision?.reason}</p>
+      <div className="score-grid">
+        {metrics.map(([label, value]) => (
+          <div key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

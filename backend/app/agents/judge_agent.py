@@ -3,7 +3,7 @@ from collections.abc import Callable
 from typing import Any
 
 from backend.app.schemas.artifact import ArtifactRef, ArtifactValidationResult
-from backend.app.schemas.query import JudgeDecision, SandboxOutput
+from backend.app.schemas.query import JudgeDecision, JudgeScores, JudgeStatus, SandboxOutput
 from backend.app.services.prompts import load_prompt
 
 
@@ -46,11 +46,37 @@ def judge_outputs(
         payload = {
             "status": "needs_revision",
             "reason": "Judge response was not valid JSON.",
+            "scores": _score_payload(0),
+            "criticalFailures": ["Judge response was not valid JSON."],
             "targetAgent": "judge",
             "revisionInstructions": "Return only the required JSON decision object.",
         }
 
+    if "scores" not in payload:
+        payload["scores"] = _score_payload(90 if payload.get("status") == "approved" else 65)
+    if "criticalFailures" not in payload:
+        payload["criticalFailures"] = []
+
     return JudgeDecision.model_validate(payload)
+
+
+def should_revise_for_score(decision: JudgeDecision, *, threshold: int) -> bool:
+    return decision.status == JudgeStatus.approved and decision.scores.overall < threshold
+
+
+def score_summary(decision: JudgeDecision) -> dict[str, int]:
+    return decision.scores.model_dump(by_alias=True)
+
+
+def _score_payload(value: int) -> dict[str, int]:
+    return JudgeScores(
+        relevance=value,
+        completion=value,
+        grounding=value,
+        artifact_quality=value,
+        preference_alignment=value,
+        overall=value,
+    ).model_dump(by_alias=True)
 
 
 def _strip_code_fences(text: str) -> str:

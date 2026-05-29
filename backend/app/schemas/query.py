@@ -36,9 +36,20 @@ class JudgeStatus(str, Enum):
     failed_after_retry = "failed_after_retry"
 
 
+class JudgeScores(CamelModel):
+    relevance: int = Field(default=0, ge=0, le=100)
+    completion: int = Field(default=0, ge=0, le=100)
+    grounding: int = Field(default=0, ge=0, le=100)
+    artifact_quality: int = Field(default=0, ge=0, le=100)
+    preference_alignment: int = Field(default=0, ge=0, le=100)
+    overall: int = Field(default=0, ge=0, le=100)
+
+
 class JudgeDecision(CamelModel):
     status: JudgeStatus
     reason: str
+    scores: JudgeScores = Field(default_factory=JudgeScores)
+    critical_failures: list[str] = Field(default_factory=list)
     target_agent: str | None = None
     revision_instructions: str | None = None
 
