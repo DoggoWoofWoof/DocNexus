@@ -621,3 +621,16 @@ Verification:
 - Ran Python compilation for the workflow, orchestrator, and trace modules.
 - Ran a mocked required walkthrough and confirmed the trace now shows `Executing independent agents in parallel`, then both `excel started` and `ppt started` before either completed.
 - Confirmed the walkthrough still returns 12 physicians, PPTX + XLSX artifacts, and judge approval.
+
+## 2026-05-30 - Query Normalization Trace
+
+What changed:
+
+- Added an orchestrator trace event that explains when natural-language query terms become structured filters.
+- The UI now displays the source and reason for those normalizations.
+- The main demo query now makes it clear that `NSCLC` was resolved to `C341,C342` by the demo disease-code mapping, while `oncologists`, state names, and high-volume language came from the query text.
+
+Why:
+
+- Empty preference fields should not look like hidden defaults.
+- The assignment expects natural-language intent extraction, but the demo needs to expose the extraction step so reviewers can see where filters came from.

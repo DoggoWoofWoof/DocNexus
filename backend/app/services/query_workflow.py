@@ -737,6 +737,11 @@ def _guard_tool_arguments_for_query(
         removed["specialty"] = arguments.pop("specialty")
 
     arguments, overrides = _apply_preference_overrides(arguments, request)
+    normalization_metadata = _query_normalization_metadata(
+        query=query,
+        arguments=arguments,
+        request=request,
+    )
 
     if removed:
         trace.retrying(
@@ -753,6 +758,13 @@ def _guard_tool_arguments_for_query(
             agent=AgentName.orchestrator,
             message="Applied structured preference overrides.",
             metadata={"overrides": overrides},
+        )
+    if normalization_metadata:
+        trace.completed(
+            started_event_id=None,
+            agent=AgentName.orchestrator,
+            message="Normalized query terms into data filters.",
+            metadata=normalization_metadata,
         )
 
     if not removed and not overrides:
@@ -809,6 +821,57 @@ def _query_explicitly_mentions_specialty(query: str) -> bool:
         "specialties",
     ]
     return any(term in normalized for term in specialty_terms)
+
+
+def _query_normalization_metadata(
+    *,
+    query: str,
+    arguments: dict[str, object],
+    request: QueryRequest,
+) -> dict[str, object]:
+    inferred_filters: dict[str, object] = {}
+    reasons: list[str] = []
+
+    if (
+        arguments.get("icd10_codes")
+        and not request.preferences.icd10_codes
+        and _query_mentions_nsclc(query)
+        and not _query_explicitly_mentions_icd10(query)
+    ):
+        inferred_filters["icd10Codes"] = arguments["icd10_codes"]
+        reasons.append(
+            "NSCLC was resolved to the demo ICD-10 scope C341/C342 from the orchestrator disease-code mapping."
+        )
+
+    if arguments.get("specialty") and not request.preferences.specialties:
+        inferred_filters["specialty"] = arguments["specialty"]
+        reasons.append("Specialty language in the query was normalized to the dataset specialty label.")
+
+    if arguments.get("state") and not request.preferences.states:
+        inferred_filters["states"] = arguments["state"]
+        reasons.append("State names in the query were normalized to two-letter state codes.")
+
+    if arguments.get("volume_threshold") and not request.preferences.volume_threshold:
+        inferred_filters["volumeThreshold"] = arguments["volume_threshold"]
+        reasons.append("High-volume language in the query was normalized to the minimum volume tier.")
+
+    if not inferred_filters:
+        return {}
+
+    return {
+        "source": "natural_language_query",
+        "inferredFilters": inferred_filters,
+        "normalizationReason": " ".join(reasons),
+    }
+
+
+def _query_mentions_nsclc(query: str) -> bool:
+    normalized = query.lower()
+    return "nsclc" in normalized or "non-small cell" in normalized or "non small cell" in normalized
+
+
+def _query_explicitly_mentions_icd10(query: str) -> bool:
+    return bool(re.search(r"\bC\d{2,4}\b", query.upper()))
 
 
 def _order_tool_calls(tool_calls: list[MistralToolCall]) -> list[MistralToolCall]:

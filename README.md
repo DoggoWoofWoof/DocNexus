@@ -560,6 +560,7 @@ Current query behavior:
 - Relies on Mistral tool calling to extract ICD-10 codes, geography, specialty, volume tier, and artifact intent from the query.
 - Uses `/query/stream` from the frontend so trace events render while the workflow is still running.
 - Executes `get_physician_data` through the same backend physician service used by `GET /physicians`.
+- Shows a query-normalization trace when natural-language terms become structured filters, e.g. `NSCLC` -> demo ICD-10 scope `C341,C342`, `oncologists` -> `Medical Oncology`, and state names -> two-letter state codes.
 - Executes `call_ppt_agent` when selected and generates a downloadable `.pptx` through the shared E2B/local artifact worker.
 - Executes `call_excel_agent` when selected and generates a downloadable `.xlsx` through the shared E2B/local artifact worker.
 - Executes PPT and Excel branches in parallel when both are selected after data retrieval.

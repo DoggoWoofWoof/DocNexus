@@ -324,9 +324,11 @@ function traceMetadataItems(metadata: Record<string, unknown>): Array<readonly [
   appendValue(items, "Tools", metadata.selectedTools);
   appendValue(items, "Parallel", metadata.parallelTools);
   appendValue(items, "Artifacts", metadata.artifactRequests);
+  appendValue(items, "Source", metadata.source);
   appendFilterItems(items, metadata.inferredFilters, "");
   appendFilterItems(items, metadata.arguments, "");
   appendFilterItems(items, metadata.filters, "Applied ");
+  appendValue(items, "Reason", metadata.normalizationReason);
   appendValue(items, "Records", metadata.count);
   appendValue(items, "Physicians", metadata.physicianCount);
   appendValue(items, "Chart", metadata.chartArtifactId);

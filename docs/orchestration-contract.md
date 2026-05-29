@@ -57,6 +57,8 @@ The current `POST /query` and `POST /query/stream` endpoints accept:
 
 The frontend can provide structured preferences, but the orchestrator still has to interpret the natural language query and decide which tools to call. Non-empty preferences are treated as explicit overrides on the `get_physician_data` tool call, which keeps the preference panel meaningful while preserving LLM-based artifact routing.
 
+When preferences are empty, filters shown in the trace are inferred from the query, not silently defaulted. For example, the required walkthrough query says `NSCLC`, `oncologists`, `California and New York`, and `high-volume`; the orchestrator normalizes those into `C341,C342`, `Medical Oncology`, `CA/NY`, and `volume_threshold=high` and emits a trace reason for that normalization.
+
 ## Query Streaming
 
 The React frontend uses `POST /query/stream` so it can send the full query payload and receive live workflow events. The response media type is:
