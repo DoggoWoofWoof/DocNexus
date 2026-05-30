@@ -172,7 +172,19 @@ function App() {
           </div>
           {response?.answerMarkdown ? (
             <div className="markdown-body">
-              <ReactMarkdown components={{ img: MarkdownImage }} remarkPlugins={[remarkGfm]}>
+              <ReactMarkdown
+                components={{
+                  a: (props) => (
+                    <MarkdownLink
+                      {...props}
+                      artifacts={response.artifacts}
+                      onDownloadArtifact={handleDownloadArtifact}
+                    />
+                  ),
+                  img: MarkdownImage,
+                }}
+                remarkPlugins={[remarkGfm]}
+              >
                 {normalizeMarkdown(response.answerMarkdown)}
               </ReactMarkdown>
             </div>
@@ -289,6 +301,51 @@ function PreferencePanel({
 function MarkdownImage({ src = "", alt = "", ...props }: ComponentProps<"img">) {
   const resolvedSrc = typeof src === "string" && src.startsWith("/artifacts/") ? artifactUrl(src) : src;
   return <img {...props} alt={alt} src={resolvedSrc} />;
+}
+
+function MarkdownLink({
+  href = "",
+  children,
+  artifacts,
+  onDownloadArtifact,
+  ...props
+}: ComponentProps<"a"> & {
+  artifacts: ArtifactRef[];
+  onDownloadArtifact: (artifact: ArtifactRef) => Promise<void>;
+}) {
+  const artifact = findArtifactByHref(href, artifacts);
+  if (!artifact) {
+    return (
+      <a {...props} href={href}>
+        {children}
+      </a>
+    );
+  }
+
+  return (
+    <a
+      {...props}
+      href={artifactUrl(artifact.downloadUrl)}
+      onClick={(event) => {
+        event.preventDefault();
+        void onDownloadArtifact(artifact);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
+function findArtifactByHref(href: string, artifacts: ArtifactRef[]): ArtifactRef | undefined {
+  if (!href) {
+    return undefined;
+  }
+
+  const normalizedHref = href.startsWith("http") ? href : artifactUrl(href);
+  return artifacts.find((artifact) => {
+    const normalizedArtifactUrl = artifactUrl(artifact.downloadUrl);
+    return href === artifact.downloadUrl || normalizedHref === normalizedArtifactUrl;
+  });
 }
 
 function TraceList({ trace, isRunning }: { trace: TraceEvent[]; isRunning: boolean }) {
