@@ -15,6 +15,17 @@ Planned final deliverable:
 - Sandbox Agent that executes Python analysis code and returns stdout plus charts
 - Live agent trace showing the orchestration path and timing
 
+## Video Demo
+
+Demo link: https://www.youtube.com/watch?v=tFFhSYPehgk
+
+The submitted recording includes the required product walkthrough first, followed by an optional deeper code walkthrough:
+
+- Core demo: `00:00-09:18`
+- Optional code walkthrough: `09:18-18:28`
+
+The core demo shows the architecture, local setup, live React UI, streaming agent trace, PPTX/XLSX artifact generation, sandbox analysis, and judge validation. The later code walkthrough opens the main backend, LangGraph, agent, prompt, route, and frontend files for reviewers who want more implementation detail.
+
 Current implemented slice:
 
 - Architecture documentation and decision log
@@ -490,6 +501,8 @@ SANDBOX_TIMEOUT_SECONDS=30
 
 FRONTEND_ORIGIN=http://localhost:5173
 ```
+
+Real API keys should only be placed in the local `.env` file. `.env.example` intentionally uses placeholders and is safe to commit.
 
 ## Local Setup
 
