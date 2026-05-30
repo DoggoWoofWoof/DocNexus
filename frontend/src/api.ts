@@ -1,4 +1,4 @@
-import type { PhysicianListResponse, QueryRequest, QueryResponse, QueryStreamEvent, TraceEvent } from "./types";
+import type { ArtifactRef, PhysicianListResponse, QueryRequest, QueryResponse, QueryStreamEvent, TraceEvent } from "./types";
 
 export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
@@ -82,6 +82,23 @@ export function artifactUrl(downloadUrl: string): string {
     return downloadUrl;
   }
   return `${API_BASE_URL}${downloadUrl}`;
+}
+
+export async function downloadArtifact(artifact: ArtifactRef): Promise<void> {
+  const response = await fetch(artifactUrl(artifact.downloadUrl));
+  if (!response.ok) {
+    throw new Error(`Artifact download failed with ${response.status}`);
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = artifact.filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(objectUrl);
 }
 
 function handleStreamLine(

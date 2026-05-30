@@ -17,7 +17,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 
-import { API_BASE_URL, artifactUrl, runQueryStream } from "./api";
+import { API_BASE_URL, artifactUrl, downloadArtifact, runQueryStream } from "./api";
 import type { ArtifactRef, ArtifactType, Physician, QueryPreferences, QueryResponse, TraceEvent } from "./types";
 
 const SAMPLE_QUERIES = [
@@ -88,6 +88,15 @@ function App() {
       setError(err instanceof Error ? err.message : "Query failed.");
     } finally {
       setIsRunning(false);
+    }
+  }
+
+  async function handleDownloadArtifact(artifact: ArtifactRef) {
+    setError(null);
+    try {
+      await downloadArtifact(artifact);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Artifact download failed.");
     }
   }
 
@@ -199,14 +208,14 @@ function App() {
           {response?.artifacts.length ? (
             <div className="artifact-list">
               {response.artifacts.map((artifact) => (
-                <a key={artifact.id} href={artifactUrl(artifact.downloadUrl)}>
+                <button key={artifact.id} type="button" onClick={() => void handleDownloadArtifact(artifact)}>
                   {artifactIcon(artifact.type)}
                   <span>
                     {artifact.filename}
                     <small>{artifact.sourceAgent} · {artifactProvider(artifact)}</small>
                   </span>
                   <Download size={16} />
-                </a>
+                </button>
               ))}
             </div>
           ) : (
